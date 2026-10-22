@@ -1,0 +1,157 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useRef, useState, type FormEvent } from "react";
+import { api, ApiError, describeError } from "@/lib/api";
+import { MAX_DESCRIPTION, NewEscrowForm } from "@/lib/schemas";
+import { useSession } from "@/lib/session";
+import { SignIn } from "./Account";
+import { Button, Card, Field, inputClass, Notice, Spinner } from "./ui";
+
+type Values = {
+  buyer_id: string;
+  amount_sats: string;
+  description: string;
+  hold_amount: string;
+  hold_unit: "minutes" | "hours";
+};
+
+const initial: Values = { buyer_id: "", amount_sats: "", description: "", hold_amount: "1", hold_unit: "hours" };
+
+// Server error codes that belong to a particular field.
+const fieldOfCode: Record<string, keyof Values> = {
+  unknown_buyer: "buyer_id",
+  invalid_amount: "amount_sats",
+  invalid_description: "description",
+  invalid_deadline: "hold_amount",
+};
+
+export function NewEscrow() {
+  const session = useSession();
+  const router = useRouter();
+  const [values, setValues] = useState<Values>(initial);
+  const [errors, setErrors] = useState<Partial<Record<keyof Values, string>>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // One key per submission: retrying the same values reuses it, so a lost response can't create a
+  // second escrow. Editing the form starts a new submission.
+  const idempotencyKey = useRef<string | null>(null);
+
+  if (session === undefined) return <Spinner />;
+  if (!session) return <SignIn note="Sign in as the seller to create an escrow." />;
+  if (session.kind === "operator") {
+    return <Notice tone="info">Operators can&apos;t be a party to an escrow. Sign in with a user token instead.</Notice>;
+  }
+
+  function set<K extends keyof Values>(key: K, value: Values[K]) {
+    setValues((v) => ({ ...v, [key]: value }));
+    setErrors((e) => ({ ...e, [key]: undefined }));
+    idempotencyKey.current = null;
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    const parsed = NewEscrowForm.safeParse(values);
+    if (!parsed.success) {
+      const next: Partial<Record<keyof Values, string>> = {};
+      for (const issue of parsed.error.issues) {
+        const key = issue.path[0] as keyof Values;
+        next[key] ??= issue.message;
+      }
+      setErrors(next);
+      return;
+    }
+    if (parsed.data.buyer_id === session?.userId) {
+      setErrors({ buyer_id: "That's your own id. Enter the buyer's id." });
+      return;
+    }
+    idempotencyKey.current ??= crypto.randomUUID();
+    setBusy(true);
+    try {
+      const escrow = await api.create(parsed.data, idempotencyKey.current);
+      router.push(`/escrows/${escrow.id}`);
+    } catch (err) {
+      const field = err instanceof ApiError ? fieldOfCode[err.code] : undefined;
+      if (field) setErrors({ [field]: describeError(err) });
+      else setFormError(describeError(err));
+      if (err instanceof ApiError && err.code === "idempotency_key_reuse") idempotencyKey.current = null;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">New escrow</h1>
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          You are the seller. The buyer accepts the offer, pays, and the payment stays locked until they hand you
+          the release secret, or until the hold time runs out and they are refunded.
+        </p>
+      </div>
+      <Card>
+        <form onSubmit={submit} className="space-y-4" noValidate>
+          <Field label="Buyer's user id" hint="Ask the buyer for it; they see it on their home page." error={errors.buyer_id}>
+            <input
+              value={values.buyer_id}
+              onChange={(e) => set("buyer_id", e.target.value)}
+              className={`${inputClass} font-mono`}
+              placeholder="u_…"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
+          <Field label="Amount (sats)" hint="Between 1 and 1,000,000 sats." error={errors.amount_sats}>
+            <input
+              value={values.amount_sats}
+              onChange={(e) => set("amount_sats", e.target.value)}
+              className={inputClass}
+              inputMode="numeric"
+              placeholder="1000"
+            />
+          </Field>
+          <Field
+            label="Description"
+            hint={`${values.description.length}/${MAX_DESCRIPTION} characters. Both parties see it.`}
+            error={errors.description}
+          >
+            <textarea
+              value={values.description}
+              onChange={(e) => set("description", e.target.value)}
+              className={inputClass}
+              rows={3}
+              maxLength={MAX_DESCRIPTION}
+              placeholder="What is being sold or delivered"
+            />
+          </Field>
+          <Field
+            label="Hold time"
+            hint="How long the payment stays locked once paid. If the buyer hasn't released by then, they are refunded. 1 minute to 6 hours."
+            error={errors.hold_amount}
+          >
+            <div className="flex gap-2">
+              <input
+                value={values.hold_amount}
+                onChange={(e) => set("hold_amount", e.target.value)}
+                className={`${inputClass} max-w-32`}
+                inputMode="decimal"
+              />
+              <select
+                value={values.hold_unit}
+                onChange={(e) => set("hold_unit", e.target.value as Values["hold_unit"])}
+                className={`${inputClass} max-w-40`}
+              >
+                <option value="minutes">minutes</option>
+                <option value="hours">hours</option>
+              </select>
+            </div>
+          </Field>
+          {formError && <Notice tone="error">{formError}</Notice>}
+          <Button type="submit" busy={busy}>
+            Create escrow
+          </Button>
+        </form>
+      </Card>
+    </div>
+  );
+}
