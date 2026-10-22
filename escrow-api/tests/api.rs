@@ -449,10 +449,12 @@ async fn health_reports_node_connectivity() {
     let app = app().await;
     let (s, v) = app.call(Method::GET, "/health", None, None).await;
     assert_eq!((s, v["node"].as_str()), (StatusCode::OK, Some("up")));
+    assert_eq!(v["server_time"], T0);
 
     app.node.set_offline(true);
     let (s, v) = app.call(Method::GET, "/health", None, None).await;
     assert_eq!((s, v["node"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("down")));
+    assert_eq!(v["server_time"], T0, "clock is reported even when the node is down");
 }
 
 #[tokio::test]

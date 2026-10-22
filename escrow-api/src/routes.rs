@@ -85,9 +85,15 @@ where
     A: LightningAdapter + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    // `server_time` lets browsers correct countdowns for their own clock skew.
+    let server_time = (st.now)();
     match st.service.node_health().await {
-        Ok(()) => Json(json!({ "status": "ok", "node": "up" })).into_response(),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "degraded", "node": "down" }))).into_response(),
+        Ok(()) => Json(json!({ "status": "ok", "node": "up", "server_time": server_time })).into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "degraded", "node": "down", "server_time": server_time })),
+        )
+            .into_response(),
     }
 }
 
