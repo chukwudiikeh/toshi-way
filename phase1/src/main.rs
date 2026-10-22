@@ -1,13 +1,14 @@
 //! Phase 1: prove the hold-invoice cycle on the regtest network.
 //!
-//! Usage: `cargo run -p phase1 -- [settle|cancel|both]` (default: both)
+//! Usage: `cargo run -p phase1 -- [settle|cancel|timeout|both]` (default: both)
+//! `timeout` takes no action and mines blocks until the node cancels the hold itself.
 //!
 //! Plays all three roles against real LND nodes:
 //!   buyer generates P and H = sha256(P)  ->  seller creates a hold invoice for H
 //!   buyer pays through the router        ->  seller sees ACCEPTED (funds locked)
 //!   seller settles with P (paid) or cancels (buyer refunded)
 
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use fedimint_tonic_lnd::{
@@ -15,7 +16,7 @@ use fedimint_tonic_lnd::{
     invoicesrpc::{
         AddHoldInvoiceRequest, CancelInvoiceMsg, SettleInvoiceMsg, SubscribeSingleInvoiceRequest,
     },
-    lnrpc::{invoice::InvoiceState, payment::PaymentStatus, ChannelBalanceRequest},
+    lnrpc::{invoice::InvoiceState, payment::PaymentStatus, ChannelBalanceRequest, GetInfoRequest},
     routerrpc::SendPaymentRequest,
     Client,
 };
@@ -30,6 +31,28 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 enum Outcome {
     Settle,
     Cancel,
+    /// Nobody acts; blocks are mined until the hold expires and the node cancels it.
+    Timeout,
+}
+
+/// Final CLTV delta for the timeout scenario: small enough to reach by mining, above LND's minimum.
+const TIMEOUT_CLTV_DELTA: u64 = 24;
+
+fn mine(blocks: u32) -> Result<()> {
+    let out = Command::new("docker")
+        .args(["compose", "-f", "regtest/docker-compose.yml", "exec", "-T", "bitcoind"])
+        .args(["bitcoin-cli", "-regtest", "-rpcuser=toshi", "-rpcpassword=toshi", "-rpcwallet=miner"])
+        .arg(format!("-generate={blocks}"))
+        .output()
+        .context("running docker compose to mine blocks")?;
+    if !out.status.success() {
+        bail!("mining failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(())
+}
+
+async fn block_height(client: &mut Client) -> Result<u32> {
+    Ok(client.lightning().get_info(GetInfoRequest {}).await?.into_inner().block_height)
 }
 
 async fn node(name: &str, port: u16) -> Result<Client> {
@@ -60,7 +83,11 @@ fn state_name(state: i32) -> String {
 }
 
 async fn run(outcome: Outcome, buyer: &mut Client, seller: &mut Client) -> Result<()> {
-    let label = if outcome == Outcome::Settle { "SETTLE" } else { "CANCEL" };
+    let label = match outcome {
+        Outcome::Settle => "SETTLE",
+        Outcome::Cancel => "CANCEL",
+        Outcome::Timeout => "TIMEOUT",
+    };
     println!("\n=== scenario: {label} ===");
 
     let buyer_before = local_balance(buyer).await?;
@@ -81,6 +108,7 @@ async fn run(outcome: Outcome, buyer: &mut Client, seller: &mut Client) -> Resul
             hash: hash.clone(),
             value: AMOUNT_SATS,
             expiry: 600,
+            cltv_expiry: if outcome == Outcome::Timeout { TIMEOUT_CLTV_DELTA } else { 0 },
             ..Default::default()
         })
         .await?
@@ -120,14 +148,14 @@ async fn run(outcome: Outcome, buyer: &mut Client, seller: &mut Client) -> Resul
         while let Some(inv) = updates.message().await? {
             println!("seller invoice state: {}", state_name(inv.state));
             if inv.state == InvoiceState::Accepted as i32 {
-                return anyhow::Ok(inv.amt_paid_sat);
+                return anyhow::Ok(inv);
             }
         }
         bail!("invoice stream ended before ACCEPTED")
     })
     .await
     .context("timed out waiting for ACCEPTED")??;
-    println!("LOCKED: {accepted} sats held by seller's node, not yet settled");
+    println!("LOCKED: {} sats held by seller's node, not yet settled", accepted.amt_paid_sat);
     println!(
         "balances while held: buyer={} seller={}",
         local_balance(buyer).await?,
@@ -151,20 +179,48 @@ async fn run(outcome: Outcome, buyer: &mut Client, seller: &mut Client) -> Resul
                 .await?;
             println!("seller called CancelInvoice");
         }
+        Outcome::Timeout => {
+            let expiry = accepted.htlcs.first().map(|h| h.expiry_height).unwrap_or(0);
+            let start = block_height(seller).await?;
+            println!("no action taken; HTLC expiry_height={expiry}, current height={start}");
+            let mut cancelled_at = None;
+            for _ in 0..60 {
+                mine(1)?;
+                // Give the node a moment to react to the new block.
+                if let Ok(Some(inv)) =
+                    timeout(Duration::from_millis(1500), updates.message()).await.map(|r| r.ok().flatten())
+                {
+                    println!("seller invoice state: {}", state_name(inv.state));
+                    if inv.state == InvoiceState::Canceled as i32 {
+                        cancelled_at = Some(block_height(seller).await?);
+                        break;
+                    }
+                }
+            }
+            let at = cancelled_at.context("hold never expired after 60 blocks")?;
+            println!(
+                "node auto-cancelled at height {at}: {} blocks before HTLC expiry ({} blocks after lock)",
+                expiry as i64 - at as i64,
+                at - start
+            );
+        }
     }
 
     let want = if outcome == Outcome::Settle { InvoiceState::Settled } else { InvoiceState::Canceled };
-    timeout(STEP_TIMEOUT, async {
-        while let Some(inv) = updates.message().await? {
-            println!("seller invoice state: {}", state_name(inv.state));
-            if inv.state == want as i32 {
-                return anyhow::Ok(());
+    // The timeout scenario already observed CANCELED while mining.
+    if outcome != Outcome::Timeout {
+        timeout(STEP_TIMEOUT, async {
+            while let Some(inv) = updates.message().await? {
+                println!("seller invoice state: {}", state_name(inv.state));
+                if inv.state == want as i32 {
+                    return anyhow::Ok(());
+                }
             }
-        }
-        bail!("invoice stream ended before {want:?}")
-    })
-    .await
-    .context("timed out waiting for final invoice state")??;
+            bail!("invoice stream ended before {want:?}")
+        })
+        .await
+        .context("timed out waiting for final invoice state")??;
+    }
 
     let payment = timeout(STEP_TIMEOUT, pay)
         .await
@@ -185,7 +241,7 @@ async fn run(outcome: Outcome, buyer: &mut Client, seller: &mut Client) -> Resul
             assert_eq!(seller_after, seller_before + AMOUNT_SATS as u64, "seller should be paid");
             assert!(buyer_after < buyer_before, "buyer should have paid");
         }
-        Outcome::Cancel => {
+        Outcome::Cancel | Outcome::Timeout => {
             assert_eq!(status, PaymentStatus::Failed, "payment should fail back");
             assert_eq!(seller_after, seller_before, "seller must not be paid");
             assert_eq!(buyer_after, buyer_before, "buyer must be refunded in full");
@@ -207,11 +263,12 @@ async fn main() -> Result<()> {
     match mode.as_str() {
         "settle" => run(Outcome::Settle, &mut buyer, &mut seller).await?,
         "cancel" => run(Outcome::Cancel, &mut buyer, &mut seller).await?,
+        "timeout" => run(Outcome::Timeout, &mut buyer, &mut seller).await?,
         "both" => {
             run(Outcome::Settle, &mut buyer, &mut seller).await?;
             run(Outcome::Cancel, &mut buyer, &mut seller).await?;
         }
-        other => bail!("unknown mode '{other}', expected settle|cancel|both"),
+        other => bail!("unknown mode '{other}', expected settle|cancel|timeout|both"),
     }
     Ok(())
 }

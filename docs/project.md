@@ -69,6 +69,8 @@ Constraints: all node calls have timeouts; invoice subscriptions reconnect and r
 
 Timeouts are the hardest part. The service enforces its own settle-by time well before real HTLC expiry (and before LND's hold-expiry margin), unpaid invoices expire in minutes, final CLTV delta is set deliberately, and creation rejects deadlines beyond a configured maximum hold. Exact values must be tested on regtest and recorded here.
 
+Measured on regtest: LND auto-cancels a held HTLC 12 blocks before it expires (`invoices.holdexpirydelta`), and the payer adds about 3 blocks to the invoice's final CLTV delta. Usable hold window is therefore about `final_cltv_delta + 3 - 12` blocks, roughly 71 blocks (about 12 hours) with the default delta of 80. The service's settle-by must be earlier than `expiry_height - 12`.
+
 ## Trust model
 
 In Mode A nobody holds the funds, but the seller's node sees `P` at settlement and the coordinator is trusted to relay state correctly. Revealing `P` shows the buyer chose to release, not that the work was good. The buyer holds the power to withhold `P`, so the strongest use case is delivery, where the recipient must be present at handoff.
@@ -131,7 +133,7 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] PRD drafted
 - [x] Regtest network: 3 LND nodes, channels open, routed payment verified, `addholdinvoice` verified
 - [x] Phase 1 Rust program (`phase1/`): hold invoice → pay → accepted → settle / cancel, both verified
-- [ ] Timeout path: HTLC expiry with no action, CLTV/expiry values recorded
+- [x] Timeout path: with no action LND auto-cancels 12 blocks before HTLC expiry and the buyer is refunded in full (see `flow.md` section 7)
 - [ ] Escrow core, API, frontend, hardening
 
 ## Open questions
