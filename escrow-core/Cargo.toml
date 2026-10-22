@@ -1,0 +1,16 @@
+[package]
+name = "escrow-core"
+version = "0.1.0"
+edition = "2021"
+description = "Escrow state machine, timing rules and service logic, independent of any node or database"
+
+[dependencies]
+async-trait = "0.1"
+hex = "0.4"
+sha2 = "0.10"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt"] }
