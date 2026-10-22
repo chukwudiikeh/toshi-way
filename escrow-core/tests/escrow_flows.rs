@@ -365,3 +365,23 @@ async fn the_preimage_never_appears_in_debug_output() {
     let dump = format!("{:?} {:?}", f.svc.get(&e.id).await.unwrap(), f.svc.audit_log(&e.id).await.unwrap());
     assert!(!dump.contains(&hex::encode([0xab; 32])));
 }
+
+#[tokio::test]
+async fn memory_store_meets_the_store_contract() {
+    escrow_core::testing::store_contract(&MemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn node_events_are_recorded_for_the_audit_trail() {
+    let f = fixture();
+    let p = secret(1);
+    let e = issued(&f, &p).await;
+    let ev = f.node.pay(&p.hash());
+    f.svc.apply_event(ev, T0 + 5).await.unwrap();
+
+    use escrow_core::store::Store;
+    let events = f.store.node_events(&e.id).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].node_invoice_state, NodeInvoiceState::Accepted);
+    assert_eq!(events[0].received_at, T0 + 5);
+}

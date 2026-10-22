@@ -1,0 +1,221 @@
+//! Runs the escrow against the real regtest network from `regtest/setup.sh`.
+//! Ignored by default; run with `cargo test -p escrow-lnd -- --ignored --test-threads=1`.
+
+use std::{future::pending, sync::Arc, time::Duration};
+
+use escrow_core::{
+    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
+    model::{NodeInvoiceState, Preimage},
+    service::{EscrowService, NewEscrow},
+    state::EscrowState,
+    timing::TimingConfig,
+};
+use escrow_lnd::{install_crypto_provider, runner, LndAdapter};
+use escrow_sqlite::SqliteStore;
+use fedimint_tonic_lnd::{
+    connect,
+    lnrpc::payment::PaymentStatus,
+    routerrpc::SendPaymentRequest,
+    Client,
+};
+use rand::RngCore;
+use tokio::{task::JoinHandle, time::sleep};
+
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn creds(node: &str, file: &str) -> String {
+    format!("{}/../regtest/creds/{node}/{file}", env!("CARGO_MANIFEST_DIR"))
+}
+
+async fn adapter(node: &str, port: u16) -> LndAdapter {
+    LndAdapter::connect(&format!("https://localhost:{port}"), creds(node, "tls.cert"), creds(node, "admin.macaroon"), CALL_TIMEOUT)
+        .await
+        .expect("is ./regtest/setup.sh running?")
+}
+
+async fn buyer_client() -> Client {
+    install_crypto_provider();
+    connect("https://localhost:10001".into(), creds("buyer", "tls.cert"), creds("buyer", "admin.macaroon"))
+        .await
+        .expect("is ./regtest/setup.sh running?")
+}
+
+fn new_secret() -> Preimage {
+    let mut b = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    Preimage::from_bytes(b)
+}
+
+/// The buyer pays `invoice` through the router; resolves with the payment's final status.
+fn pay(invoice: String) -> JoinHandle<PaymentStatus> {
+    tokio::spawn(async move {
+        let mut buyer = buyer_client().await;
+        let mut stream = buyer
+            .router()
+            .send_payment_v2(SendPaymentRequest {
+                payment_request: invoice,
+                timeout_seconds: 120,
+                fee_limit_sat: 100,
+                no_inflight_updates: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let mut last = PaymentStatus::InFlight;
+        while let Some(p) = stream.message().await.unwrap() {
+            last = PaymentStatus::try_from(p.status).unwrap();
+        }
+        last
+    })
+}
+
+async fn wait_until<F, Fut>(what: &str, secs: u64, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..secs * 4 {
+        if check().await {
+            return;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network"]
+async fn adapter_settle_cancel_and_idempotency() {
+    let seller = adapter("seller", 10003).await;
+    let timing = TimingConfig::default();
+    let req = |p: &Preimage| HoldInvoiceRequest {
+        payment_hash: p.hash(),
+        amount_sats: 1000,
+        memo: "adapter test".into(),
+        expiry_secs: 600,
+        final_cltv_delta: timing.final_cltv_delta(0, 3600),
+    };
+
+    // Unknown invoice.
+    assert_eq!(seller.lookup_invoice(&new_secret().hash()).await.unwrap(), None);
+
+    // Settle path.
+    let p = new_secret();
+    let invoice = seller.create_hold_invoice(req(&p)).await.unwrap();
+    assert!(invoice.starts_with("lnbcrt"));
+    assert_eq!(seller.lookup_invoice(&p.hash()).await.unwrap().unwrap().state, NodeInvoiceState::Open);
+    let payment = pay(invoice);
+    wait_until("ACCEPTED", 20, || async {
+        seller.lookup_invoice(&p.hash()).await.unwrap().is_some_and(|i| i.state == NodeInvoiceState::Accepted)
+    })
+    .await;
+    let held = seller.lookup_invoice(&p.hash()).await.unwrap().unwrap();
+    assert!(held.htlc_expiry_height.is_some(), "held HTLC should report its expiry height");
+    seller.settle_invoice(&p).await.unwrap();
+    seller.settle_invoice(&p).await.expect("settling twice must be harmless");
+    assert_eq!(seller.lookup_invoice(&p.hash()).await.unwrap().unwrap().state, NodeInvoiceState::Settled);
+    assert_eq!(payment.await.unwrap(), PaymentStatus::Succeeded);
+
+    // A cancelled invoice cannot be settled.
+    let q = new_secret();
+    let invoice = seller.create_hold_invoice(req(&q)).await.unwrap();
+    let payment = pay(invoice);
+    wait_until("ACCEPTED", 20, || async {
+        seller.lookup_invoice(&q.hash()).await.unwrap().is_some_and(|i| i.state == NodeInvoiceState::Accepted)
+    })
+    .await;
+    seller.cancel_invoice(&q.hash()).await.unwrap();
+    seller.cancel_invoice(&q.hash()).await.expect("cancelling twice must be harmless");
+    assert_eq!(seller.lookup_invoice(&q.hash()).await.unwrap().unwrap().state, NodeInvoiceState::Canceled);
+    assert_eq!(payment.await.unwrap(), PaymentStatus::Failed);
+    assert!(matches!(seller.settle_invoice(&q).await, Err(AdapterError::Rejected(_))));
+}
+
+type Svc = EscrowService<LndAdapter, Arc<SqliteStore>>;
+
+async fn service() -> (Arc<Svc>, LndAdapter) {
+    let seller = adapter("seller", 10003).await;
+    let store = Arc::new(SqliteStore::in_memory().await.unwrap());
+    (Arc::new(EscrowService::new(seller.clone(), store, TimingConfig::default())), seller)
+}
+
+fn offer(hold_secs: i64) -> NewEscrow {
+    NewEscrow {
+        buyer_id: "buyer".into(),
+        seller_id: "seller".into(),
+        amount_sats: 1000,
+        description: "regtest escrow".into(),
+        deadline_at: runner::unix_now() + hold_secs,
+    }
+}
+
+async fn state_of(svc: &Svc, id: &str) -> EscrowState {
+    svc.get(id).await.unwrap().state
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network"]
+async fn service_settles_and_refunds_driven_by_live_node_events() {
+    let (svc, seller) = service().await;
+    let events = tokio::spawn({
+        let (svc, seller) = (svc.clone(), seller.clone());
+        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+    });
+
+    // Happy path: lock via the node event, then release with the preimage.
+    let p = new_secret();
+    let e = svc.create(offer(1800), runner::unix_now()).await.unwrap();
+    let e = svc.accept(&e.id, p.hash(), "buyer", runner::unix_now()).await.unwrap();
+    let payment = pay(e.invoice.clone().unwrap());
+    wait_until("LOCKED", 20, || async { state_of(&svc, &e.id).await == EscrowState::Locked }).await;
+    assert!(svc.release(&e.id, &new_secret(), "seller", runner::unix_now()).await.is_err(), "wrong preimage");
+    assert_eq!(state_of(&svc, &e.id).await, EscrowState::Locked);
+    let done = svc.release(&e.id, &p, "seller", runner::unix_now()).await.unwrap();
+    assert_eq!(done.state, EscrowState::Settled);
+    assert_eq!(payment.await.unwrap(), PaymentStatus::Succeeded);
+
+    // Cancel path.
+    let q = new_secret();
+    let e = svc.create(offer(1800), runner::unix_now()).await.unwrap();
+    let e = svc.accept(&e.id, q.hash(), "buyer", runner::unix_now()).await.unwrap();
+    let payment = pay(e.invoice.clone().unwrap());
+    wait_until("LOCKED", 20, || async { state_of(&svc, &e.id).await == EscrowState::Locked }).await;
+    let done = svc.cancel(&e.id, "buyer", "changed my mind", runner::unix_now()).await.unwrap();
+    assert_eq!(done.state, EscrowState::Refunded);
+    assert_eq!(payment.await.unwrap(), PaymentStatus::Failed);
+
+    // Every transition was recorded, and node events were kept.
+    assert_eq!(svc.audit_log(&e.id).await.unwrap().len(), 3);
+
+    events.abort();
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network; takes about a minute"]
+async fn scheduler_refunds_automatically_at_the_deadline() {
+    let (svc, seller) = service().await;
+    let events = tokio::spawn({
+        let (svc, seller) = (svc.clone(), seller.clone());
+        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+    });
+    let scheduler = tokio::spawn({
+        let svc = svc.clone();
+        async move { runner::run_scheduler(&svc, Duration::from_secs(1), pending()).await }
+    });
+
+    let p = new_secret();
+    let e = svc.create(offer(62), runner::unix_now()).await.unwrap();
+    let e = svc.accept(&e.id, p.hash(), "buyer", runner::unix_now()).await.unwrap();
+    let payment = pay(e.invoice.clone().unwrap());
+    wait_until("LOCKED", 20, || async { state_of(&svc, &e.id).await == EscrowState::Locked }).await;
+
+    // No human action from here on.
+    wait_until("automatic refund", 90, || async { state_of(&svc, &e.id).await == EscrowState::Refunded }).await;
+    assert_eq!(payment.await.unwrap(), PaymentStatus::Failed);
+    let log = svc.audit_log(&e.id).await.unwrap();
+    assert_eq!(log.last().unwrap().to_state, EscrowState::Refunded);
+
+    events.abort();
+    scheduler.abort();
+}

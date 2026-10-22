@@ -151,6 +151,56 @@ Not done yet in Phase 2: the real LND adapter, a SQL store (SQLite or Postgres),
 
 ---
 
+## 9. Phase 2, part 2: SQLite store and LND adapter
+
+Three more crates, so the workspace is now `phase1`, `escrow-core`, `escrow-sqlite` and `escrow-lnd`.
+
+### Store contract and node events (`escrow-core`)
+
+- Added `NodeEventRecord` and `Store::record_node_event` / `node_events`, matching the PRD's node-event table. `apply_event` records every event it handles (state plus a hash of the raw event) before acting on it.
+- Added `escrow_core::testing::store_contract`, one test every `Store` backend must pass: round trip, duplicate insert, compare-and-set transitions (a stale transition fails and leaves no audit entry), update fields kept across empty updates, ordered audit log, active listing, node events. `MemoryStore` and SQLite both pass it. A future Postgres store only needs to implement the trait and pass the same function.
+
+### SQLite store (`escrow-sqlite`)
+
+- Tables: `escrows`, `audit_log`, `node_events` (schema in `escrow-sqlite/src/schema.sql`, created with `IF NOT EXISTS` on open). WAL mode, foreign keys on. Payment hash is stored as hex and has a `UNIQUE` index as a database-level backstop for the "one hash per escrow" rule.
+- `transition` runs in one SQL transaction: `UPDATE ... WHERE id = ? AND state = ?` (compare-and-set), then the audit insert. If no row matched it reports `NotFound` or `Conflict`.
+- There is deliberately no column for a preimage, and a test checks the schema text for it.
+- Tests: the shared contract, a full flow that closes the database file, reopens it, reconciles against the node and settles, and the hash-uniqueness rule.
+- Switching to Postgres later means a new `escrow-postgres` crate implementing `Store`; the service, adapter and tests do not change.
+- No migration framework yet. The schema is create-if-missing; schema changes will need migrations before any real data matters.
+
+### LND adapter (`escrow-lnd`)
+
+- `LndAdapter` implements `LightningAdapter` over gRPC. Every call is wrapped in a timeout and failures map to `Unavailable` (retryable: unreachable, timed out, aborted) or `Rejected` (the node said no).
+- `settle_invoice` and `cancel_invoice` are idempotent: if LND returns an error, the adapter looks the invoice up and treats "already settled" or "already cancelled" as success.
+- `lookup_invoice` uses `LookupInvoiceV2` and returns the held HTLC's expiry height when one exists.
+- `runner::run_event_loop` keeps a watcher per open escrow, feeds each state change into `apply_event`, reconciles at startup and every 30 s as a safety net, and resubscribes with backoff when a stream drops. `runner::run_scheduler` calls `tick` every second so deadlines fire without a human.
+
+### Finding: the node-wide invoice stream does not work for this
+
+My first event loop used LND's `SubscribeInvoices` (all invoices) and both service tests timed out waiting for `LOCKED`. A probe showed the subscribe call itself hangs until the first event, because LND sends no response headers on that stream until it has something to send, so the call timeout turned it into a permanent "unavailable". It is also documented to announce new and settled invoices, not a hold invoice moving to `ACCEPTED`.
+
+Fix: subscribe per invoice with `SubscribeSingleInvoice`. LND sends the invoice's current state immediately, so a watcher that starts late still learns it was paid, and every state change arrives as a push. The periodic `reconcile` stays as a net underneath.
+
+### Results against the real regtest network
+
+`cargo test -p escrow-lnd -- --ignored --test-threads=1` (needs `./regtest/setup.sh` running; takes about a minute):
+
+- `adapter_settle_cancel_and_idempotency`: create, `OPEN`, paid, `ACCEPTED` with an HTLC expiry height, settle (twice), then a second invoice cancelled (twice) with the buyer's payment failing back, and settling a cancelled invoice rejected.
+- `service_settles_and_refunds_driven_by_live_node_events`: `LOCKED` reached from the live node event, wrong preimage rejected with state unchanged, correct preimage `SETTLED`, buyer payment `Succeeded`; a second escrow cancelled to `REFUNDED` with the payment failing back.
+- `scheduler_refunds_automatically_at_the_deadline`: a 62-second escrow is paid and locked, then nothing is done by anyone; the scheduler cancels it at the deadline and it ends `REFUNDED` with the payment failed back. This is the refund demo from the PRD, running against real Lightning nodes.
+
+Whole workspace: 33 normal tests plus the 3 network tests, all passing.
+
+### Not done
+
+- Restart-with-a-live-node test (the mock version exists in `escrow-core`; the real-node version is still to write).
+- Restricted macaroon: tests use `admin.macaroon`. The service should bake one limited to invoice operations.
+- Structured logging setup: the code emits `tracing` events but nothing installs a subscriber yet.
+- Hold-time tuning against real wallets.
+
+---
+
 ## Next
 
-Phase 2, part 2: implement `LightningAdapter` for LND (reusing the Phase 1 gRPC code, with per-call timeouts and a reconnecting invoice subscription), add a SQL `Store`, and run the same escrow flows against the real regtest nodes.
+Phase 3: the API. An Axum server wiring the service, store and runner together, with `/health` (including node connectivity), the escrow endpoints from the PRD, per-escrow authorization for buyer, seller and operator, and idempotency keys on state-changing calls.

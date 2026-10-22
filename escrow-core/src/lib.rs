@@ -10,4 +10,5 @@ pub mod model;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod testing;
 pub mod timing;

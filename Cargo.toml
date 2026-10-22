@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["phase1", "escrow-core"]
+members = ["phase1", "escrow-core", "escrow-sqlite", "escrow-lnd"]

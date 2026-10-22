@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
-    model::{AuditEntry, Escrow, PaymentHash},
+    model::{AuditEntry, Escrow, NodeEventRecord, PaymentHash},
     state::EscrowState,
 };
 
@@ -46,6 +46,8 @@ pub trait Store: Send + Sync {
         audit: AuditEntry,
     ) -> Result<Escrow, StoreError>;
     async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, StoreError>;
+    async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError>;
+    async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError>;
 }
 
 #[derive(Default)]
@@ -57,6 +59,7 @@ pub struct MemoryStore {
 struct MemoryInner {
     escrows: Vec<Escrow>,
     audit: Vec<AuditEntry>,
+    node_events: Vec<NodeEventRecord>,
 }
 
 impl MemoryStore {
@@ -142,6 +145,23 @@ impl Store for MemoryStore {
             .cloned()
             .collect())
     }
+
+    async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError> {
+        self.inner.lock().unwrap().node_events.push(event);
+        Ok(())
+    }
+
+    async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .node_events
+            .iter()
+            .filter(|n| n.escrow_id == id)
+            .cloned()
+            .collect())
+    }
 }
 
 /// Lets a service and a "restarted" service share one store.
@@ -170,5 +190,11 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, StoreError> {
         (**self).audit_log(id).await
+    }
+    async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError> {
+        (**self).record_node_event(event).await
+    }
+    async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError> {
+        (**self).node_events(id).await
     }
 }
