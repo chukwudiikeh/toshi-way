@@ -103,6 +103,17 @@ pub async fn store_contract(store: &dyn Store) {
     let active: Vec<_> = store.list_active().await.unwrap().into_iter().map(|e| e.id).collect();
     assert_eq!(active, vec!["a".to_string()]);
 
+    // Per-user listing: parties only, newest first, ties by id.
+    let mut newer = escrow("c");
+    newer.created_at = 200;
+    newer.buyer_id = "someone-else".into();
+    store.insert(newer).await.unwrap();
+    let ids = |v: Vec<Escrow>| v.into_iter().map(|e| e.id).collect::<Vec<_>>();
+    assert_eq!(ids(store.list_for_user("buyer").await.unwrap()), ["a", "b"]);
+    assert_eq!(ids(store.list_for_user("seller").await.unwrap()), ["c", "a", "b"]);
+    assert_eq!(ids(store.list_for_user("someone-else").await.unwrap()), ["c"]);
+    assert!(store.list_for_user("nobody").await.unwrap().is_empty());
+
     // Node events are kept per escrow, in order.
     for (state, at) in [(NodeInvoiceState::Accepted, 310), (NodeInvoiceState::Settled, 320)] {
         store

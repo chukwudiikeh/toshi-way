@@ -36,6 +36,8 @@ pub trait Store: Send + Sync {
     async fn get_by_hash(&self, hash: &PaymentHash) -> Result<Option<Escrow>, StoreError>;
     /// Escrows that are not in a terminal state.
     async fn list_active(&self) -> Result<Vec<Escrow>, StoreError>;
+    /// Escrows where `user_id` is the buyer or the seller, newest first (ties by id), at most 100.
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError>;
     /// Atomically move `id` from `expected` to `audit.to_state`, apply `update`, and append
     /// `audit`. Fails with `Conflict` if the escrow is no longer in `expected`.
     async fn transition(
@@ -116,6 +118,21 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
+        let mut list: Vec<Escrow> = self
+            .inner
+            .lock()
+            .unwrap()
+            .escrows
+            .iter()
+            .filter(|e| e.buyer_id == user_id || e.seller_id == user_id)
+            .cloned()
+            .collect();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        list.truncate(100);
+        Ok(list)
+    }
+
     async fn transition(
         &self,
         id: &str,
@@ -188,6 +205,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     async fn list_active(&self) -> Result<Vec<Escrow>, StoreError> {
         (**self).list_active().await
+    }
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
+        (**self).list_for_user(user_id).await
     }
     async fn transition(
         &self,

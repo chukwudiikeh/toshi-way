@@ -259,6 +259,26 @@ Run it: `OPERATOR_TOKEN=<24+ chars> ./target/debug/toshi-server &` then `OPERATO
 
 ---
 
+## 11. Phase 4, step 1: CORS, a listing endpoint, and the frontend scaffold
+
+Preparing the API for a browser app, and starting `web/`.
+
+- **CORS** (`escrow-api`): `ApiConfig.cors_origins` is an allow-list of browser origins, set with `CORS_ORIGINS` (default `http://localhost:3001,http://127.0.0.1:3001`; the API is on 3000, so the frontend runs on 3001). The layer is outermost, so preflight `OPTIONS` requests are answered before authentication and rate limiting. Allowed headers: `Authorization`, `Content-Type`, `Idempotency-Key`; exposed to the page: `x-request-id`, `Retry-After`. A test checks an allowed origin gets the headers and an unlisted one gets none.
+- **`GET /api/v1/escrows`**: the caller's own escrows as buyer or seller, newest first, at most 100. Without it a user had no way to find an escrow they had been invited to. Needed a new `Store::list_for_user` (in-memory and SQLite, with indexes on buyer and seller, covered by the shared store contract test). Operators are never parties, so they still use `/api/v1/operator/escrows`.
+- **`invoice_expires_at`** is now in the escrow view so the UI can count down an unpaid invoice. The invoice itself is still only returned by `/invoice`, to the buyer.
+- **Scaffold**: `web/` created with `create-next-app` (Next.js 16, React 19, Tailwind 4, TypeScript, ESLint, App Router). It is still the stock template; no feature code yet. `node_modules` and `.next` are gitignored.
+
+Workspace tests: 61 passing (20 API, 23 core flows, 7 core unit, 5 SQLite, 3 API unit) plus the 3 real-node tests, which are ignored by default.
+
+Frontend design decisions made before writing it:
+
+- The secret `P` is generated in the browser (`crypto.getRandomValues`) and kept in that browser's local storage, keyed by escrow id. Only `H = sha256(P)` is sent to the server.
+- The buyer hands `P` to the seller as a QR code of a link with the secret in the URL fragment (`/escrows/<id>#release=<64 hex>`). Fragments are never sent to a server, so the secret does not reach logs or the API until the seller presses release.
+- The browser never decides payment state: it renders whatever state the API reports and polls for changes.
+- Auth is the account token in local storage. That is simple and fine for the hackathon; the cost is that anything running on the page can read it, which is why the app avoids third-party scripts.
+
+---
+
 ## Next
 
-Phase 4: the web frontend (Next.js): buyer and seller views with lock status, countdown, and a QR release. Before that, decide how the buyer hands the secret to the seller (QR of the 64-hex secret) and add CORS to the API.
+Phase 4, step 2: write the app: account sign-in, create escrow (seller), escrow page by role (buyer pays and shows the release QR, seller sees the lock and releases), and the operator queue. Validate forms and API responses with Zod, and test the secret generation and release-link handling.

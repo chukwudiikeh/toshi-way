@@ -137,7 +137,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Escrow core (`escrow-core/`): state machine, timing, `LightningAdapter` + mock, `Store` + in-memory store, service logic; 27 tests passing
 - [x] Phase 2 part 2: SQLite store (`escrow-sqlite/`), LND adapter plus event and scheduler loops (`escrow-lnd/`); verified on regtest including the automatic deadline refund
 - [x] Phase 3 API (`escrow-api/`): auth, per-escrow authorization, idempotency, rate limiting, `/health`; 20 tests; both demo paths verified over HTTP on regtest (`scripts/demo.sh`)
-- [ ] Phase 4 frontend, then hardening (restricted macaroon, restart test on real node, CORS)
+- [x] CORS, `GET /api/v1/escrows` (own escrows), Next.js scaffold in `web/`
+- [ ] Phase 4 frontend screens, then hardening (restricted macaroon, restart test on real node)
 
 ## Open questions
 

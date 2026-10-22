@@ -12,7 +12,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     extract::{ConnectInfo, Request, State},
-    http::{header, HeaderName, StatusCode},
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
@@ -27,6 +27,7 @@ use escrow_core::{
 use tokio::sync::Mutex;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    cors::CorsLayer,
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
@@ -41,6 +42,8 @@ pub struct ApiConfig {
     pub rate_limit_per_min: u32,
     /// Account registrations per minute per address.
     pub register_limit_per_min: u32,
+    /// Browser origins allowed to call the API (for example `http://localhost:3001`).
+    pub cors_origins: Vec<String>,
 }
 
 impl Default for ApiConfig {
@@ -50,6 +53,7 @@ impl Default for ApiConfig {
             max_description_len: 500,
             rate_limit_per_min: 120,
             register_limit_per_min: 10,
+            cors_origins: Vec::new(),
         }
     }
 }
@@ -146,10 +150,20 @@ where
     S: Store + UserStore + Clone + 'static,
 {
     let request_id = HeaderName::from_static("x-request-id");
+    let cors = {
+        let origins: Vec<HeaderValue> =
+            state.config.cors_origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, HeaderName::from_static("idempotency-key")])
+            .expose_headers([request_id.clone(), header::RETRY_AFTER])
+            .max_age(Duration::from_secs(600))
+    };
     Router::new()
         .route("/health", get(routes::health::<A, S>))
         .route("/api/v1/users", post(routes::register::<A, S>))
-        .route("/api/v1/escrows", post(routes::create_escrow::<A, S>))
+        .route("/api/v1/escrows", post(routes::create_escrow::<A, S>).get(routes::list_mine::<A, S>))
         .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
         .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))
         .route("/api/v1/escrows/{id}/invoice", get(routes::invoice::<A, S>))
@@ -165,5 +179,7 @@ where
         .layer(TraceLayer::new_for_http())
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
+        // Outermost, so browser preflight requests are answered before auth and rate limiting.
+        .layer(cors)
         .with_state(state)
 }
