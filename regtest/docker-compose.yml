@@ -1,0 +1,113 @@
+# Local Lightning regtest network: bitcoind + three LND nodes.
+# Channels: buyer -> router -> seller (opened by regtest/setup.sh).
+name: toshi-regtest
+
+services:
+  bitcoind:
+    image: lncm/bitcoind:v27.0
+    command:
+      - -regtest=1
+      - -server=1
+      - -txindex=1
+      - -rpcuser=toshi
+      - -rpcpassword=toshi
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -fallbackfee=0.0002
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+      - -zmqpubrawtx=tcp://0.0.0.0:28333
+    volumes:
+      - bitcoind:/data/.bitcoin
+    ports:
+      - "18443:18443"
+    restart: unless-stopped
+
+  buyer:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      - bitcoind
+    restart: unless-stopped
+    command:
+      - --noseedbackup
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=toshi
+      - --bitcoind.rpcpass=toshi
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=localhost
+      - --debuglevel=info
+      - --alias=buyer
+      - --tlsextradomain=buyer
+    ports:
+      - "10001:10009"
+      - "8081:8080"
+    volumes:
+      - buyer:/root/.lnd
+
+  router:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      - bitcoind
+    restart: unless-stopped
+    command:
+      - --noseedbackup
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=toshi
+      - --bitcoind.rpcpass=toshi
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=localhost
+      - --debuglevel=info
+      - --alias=router
+      - --tlsextradomain=router
+    ports:
+      - "10002:10009"
+      - "8082:8080"
+    volumes:
+      - router:/root/.lnd
+
+  seller:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      - bitcoind
+    restart: unless-stopped
+    command:
+      - --noseedbackup
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=toshi
+      - --bitcoind.rpcpass=toshi
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=localhost
+      - --debuglevel=info
+      - --alias=seller
+      - --tlsextradomain=seller
+    ports:
+      - "10003:10009"
+      - "8083:8080"
+    volumes:
+      - seller:/root/.lnd
+
+volumes:
+  bitcoind:
+  buyer:
+  router:
+  seller:

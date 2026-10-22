@@ -1,0 +1,4 @@
+regtest/creds/
+target/
+node_modules/
+.env
