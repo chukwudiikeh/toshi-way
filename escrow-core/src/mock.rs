@@ -130,6 +130,10 @@ impl LightningAdapter for MockLightning {
         Ok(())
     }
 
+    async fn ping(&self) -> Result<(), AdapterError> {
+        check_online(&self.0.lock().unwrap())
+    }
+
     async fn lookup_invoice(
         &self,
         payment_hash: &PaymentHash,

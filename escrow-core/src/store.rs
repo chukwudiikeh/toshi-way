@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeEventRecord, PaymentHash},
+    model::{AuditEntry, Escrow, NodeEventRecord, PaymentHash, User},
     state::EscrowState,
 };
 
@@ -50,6 +50,15 @@ pub trait Store: Send + Sync {
     async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError>;
 }
 
+/// Accounts and their API tokens. Only a hash of the token is ever stored.
+#[async_trait]
+pub trait UserStore: Send + Sync {
+    /// `Conflict` if the id or the token hash already exists.
+    async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError>;
+    async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError>;
+    async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError>;
+}
+
 #[derive(Default)]
 pub struct MemoryStore {
     inner: Mutex<MemoryInner>,
@@ -60,6 +69,7 @@ struct MemoryInner {
     escrows: Vec<Escrow>,
     audit: Vec<AuditEntry>,
     node_events: Vec<NodeEventRecord>,
+    users: Vec<(User, String)>,
 }
 
 impl MemoryStore {
@@ -196,5 +206,38 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError> {
         (**self).node_events(id).await
+    }
+}
+
+#[async_trait]
+impl UserStore for MemoryStore {
+    async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        if g.users.iter().any(|(u, h)| u.id == user.id || *h == token_hash) {
+            return Err(StoreError::Conflict);
+        }
+        g.users.push((user, token_hash));
+        Ok(())
+    }
+
+    async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
+        Ok(self.inner.lock().unwrap().users.iter().find(|(_, h)| h == token_hash).map(|(u, _)| u.clone()))
+    }
+
+    async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
+        Ok(self.inner.lock().unwrap().users.iter().find(|(u, _)| u.id == id).map(|(u, _)| u.clone()))
+    }
+}
+
+#[async_trait]
+impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
+    async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError> {
+        (**self).insert_user(user, token_hash).await
+    }
+    async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
+        (**self).user_by_token_hash(token_hash).await
+    }
+    async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
+        (**self).get_user(id).await
     }
 }

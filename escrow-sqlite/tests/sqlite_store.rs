@@ -18,6 +18,11 @@ async fn sqlite_store_meets_the_store_contract() {
     store_contract(&SqliteStore::in_memory().await.unwrap()).await;
 }
 
+#[tokio::test]
+async fn sqlite_store_meets_the_user_store_contract() {
+    escrow_core::testing::user_store_contract(&SqliteStore::in_memory().await.unwrap()).await;
+}
+
 fn temp_db(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!("escrow-sqlite-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

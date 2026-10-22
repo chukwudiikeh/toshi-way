@@ -1,0 +1,169 @@
+//! HTTP API for toshi-way escrows.
+//!
+//! Handlers never decide payment state: they authenticate, authorize against the escrow's
+//! parties, validate input, and call the escrow service, whose state comes from the node.
+
+pub mod auth;
+pub mod error;
+pub mod ratelimit;
+pub mod routes;
+
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+
+use axum::{
+    extract::{ConnectInfo, Request, State},
+    http::{header, HeaderName, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    routing::{get, post},
+    Router,
+};
+use escrow_core::{
+    adapter::LightningAdapter,
+    model::{Role, User},
+    service::EscrowService,
+    store::{Store, UserStore},
+};
+use tokio::sync::Mutex;
+use tower_http::{
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
+};
+
+use crate::{auth::hash_token, error::ApiError, ratelimit::RateLimiter};
+
+#[derive(Debug, Clone)]
+pub struct ApiConfig {
+    pub max_amount_sats: u64,
+    pub max_description_len: usize,
+    /// Requests per minute per authenticated caller (or per address when anonymous).
+    pub rate_limit_per_min: u32,
+    /// Account registrations per minute per address.
+    pub register_limit_per_min: u32,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            max_amount_sats: 1_000_000,
+            max_description_len: 500,
+            rate_limit_per_min: 120,
+            register_limit_per_min: 10,
+        }
+    }
+}
+
+type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// Cached responses for `Idempotency-Key`, per user and key.
+#[derive(Default)]
+pub(crate) struct IdempotencyCache {
+    pub(crate) entries: Mutex<HashMap<(String, String), (String, serde_json::Value)>>,
+}
+
+pub struct AppState<A, S> {
+    pub service: Arc<EscrowService<A, S>>,
+    pub users: S,
+    pub config: Arc<ApiConfig>,
+    pub now: Clock,
+    pub(crate) limiter: Arc<RateLimiter>,
+    pub(crate) idempotency: Arc<IdempotencyCache>,
+}
+
+impl<A, S: Clone> Clone for AppState<A, S> {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+            users: self.users.clone(),
+            config: self.config.clone(),
+            now: self.now.clone(),
+            limiter: self.limiter.clone(),
+            idempotency: self.idempotency.clone(),
+        }
+    }
+}
+
+impl<A, S: Clone> AppState<A, S> {
+    pub fn new(service: Arc<EscrowService<A, S>>, users: S, config: ApiConfig, now: Clock) -> Self {
+        Self {
+            service,
+            users,
+            config: Arc::new(config),
+            now,
+            limiter: Arc::new(RateLimiter::default()),
+            idempotency: Arc::new(IdempotencyCache::default()),
+        }
+    }
+}
+
+/// Make sure an operator account exists for `token`. Used at startup.
+pub async fn ensure_operator<U: UserStore>(users: &U, token: &str, now: i64) -> Result<(), ApiError> {
+    let hash = hash_token(token);
+    if users.user_by_token_hash(&hash).await?.is_some() {
+        return Ok(());
+    }
+    let id = format!("operator_{}", &hash[..8]);
+    users.insert_user(User { id, role: Role::Operator, created_at: now }, hash).await?;
+    Ok(())
+}
+
+async fn rate_limit<A, S>(State(st): State<AppState<A, S>>, req: Request, next: Next) -> Response
+where
+    A: LightningAdapter + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let is_register = req.uri().path() == "/api/v1/users";
+    let (key, limit) = if is_register {
+        (format!("register:{ip}"), st.config.register_limit_per_min)
+    } else {
+        let caller = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| format!("token:{}", hash_token(v)))
+            .unwrap_or_else(|| format!("ip:{ip}"));
+        (caller, st.config.rate_limit_per_min)
+    };
+    match st.limiter.check(&key, limit, (st.now)()) {
+        Ok(()) => next.run(req).await,
+        Err(retry) => {
+            let mut e = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "too many requests");
+            e.retry_after = Some(retry);
+            axum::response::IntoResponse::into_response(e)
+        }
+    }
+}
+
+pub fn router<A, S>(state: AppState<A, S>) -> Router
+where
+    A: LightningAdapter + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let request_id = HeaderName::from_static("x-request-id");
+    Router::new()
+        .route("/health", get(routes::health::<A, S>))
+        .route("/api/v1/users", post(routes::register::<A, S>))
+        .route("/api/v1/escrows", post(routes::create_escrow::<A, S>))
+        .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
+        .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))
+        .route("/api/v1/escrows/{id}/invoice", get(routes::invoice::<A, S>))
+        .route("/api/v1/escrows/{id}/release", post(routes::release::<A, S>))
+        .route("/api/v1/escrows/{id}/cancel", post(routes::cancel::<A, S>))
+        .route("/api/v1/escrows/{id}/dispute", post(routes::dispute::<A, S>))
+        .route("/api/v1/escrows/{id}/events", get(routes::events::<A, S>))
+        .route("/api/v1/operator/escrows", get(routes::operator_list::<A, S>))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::<A, S>))
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30)))
+        // Request bodies are never logged: they can carry the release preimage.
+        .layer(TraceLayer::new_for_http())
+        .layer(PropagateRequestIdLayer::new(request_id.clone()))
+        .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
+        .with_state(state)
+}

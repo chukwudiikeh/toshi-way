@@ -18,7 +18,7 @@ use fedimint_tonic_lnd::{
         lookup_invoice_msg::InvoiceRef, AddHoldInvoiceRequest, CancelInvoiceMsg, LookupInvoiceMsg,
         SettleInvoiceMsg, SubscribeSingleInvoiceRequest,
     },
-    lnrpc::{invoice::InvoiceState, Invoice},
+    lnrpc::{invoice::InvoiceState, GetInfoRequest, Invoice},
     tonic::{Code, Status, Streaming},
     Client,
 };
@@ -182,6 +182,16 @@ impl LightningAdapter for LndAdapter {
                 Ok(Some(inv)) if inv.state == NodeInvoiceState::Canceled => Ok(()),
                 _ => Err(err),
             },
+        }
+    }
+
+    async fn ping(&self) -> Result<(), AdapterError> {
+        let mut client = self.client.clone();
+        let info = self.call(async { client.lightning().get_info(GetInfoRequest {}).await }).await?.into_inner();
+        if info.synced_to_chain {
+            Ok(())
+        } else {
+            Err(AdapterError::Unavailable("node is not synced to the chain".into()))
         }
     }
 

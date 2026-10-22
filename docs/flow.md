@@ -201,6 +201,64 @@ Whole workspace: 33 normal tests plus the 3 network tests, all passing.
 
 ---
 
+## 10. Phase 3: the API (`escrow-api/`)
+
+An Axum server crate. The library builds a router that is generic over the node adapter and the store, so tests drive it in-process with the mock node; the `toshi-server` binary wires it to SQLite, the LND adapter, the event loop and the scheduler. 17 API tests, plus unit tests for auth and rate limiting.
+
+### Core additions this needed
+
+- `User`, `Role` (`user` or `operator`) and a `UserStore` trait with in-memory and SQLite implementations (new `users` table) and a shared contract test. Only the SHA-256 of a token is stored; a test checks the raw token is not a lookup key.
+- `LightningAdapter::ping` (LND `GetInfo`, requires `synced_to_chain`) for `/health`.
+- `EscrowService::list_active`, `node_events`, `node_health`.
+
+### Authentication and authorization
+
+- Accounts are created with `POST /api/v1/users`, which returns a random 256-bit token once. Requests use `Authorization: Bearer <token>`. The operator account is created at startup from `OPERATOR_TOKEN`.
+- Buyer and seller are per escrow, not per account. The caller's standing on an escrow is worked out from the escrow itself.
+- Someone with no standing on an escrow gets **404**, not 403, so escrow ids cannot be probed.
+- Who may do what: only the buyer accepts and fetches the invoice; buyer or seller release and dispute; the operator reads everything, cancels, and sees the dispute queue but cannot release or dispute; operators cannot be a party to an escrow.
+- **Cancel rule:** a buyer may cancel only before paying. After the funds are locked, cancelling hands the buyer a refund, so letting the buyer do it alone would strip the seller's protection. The seller (giving the money back) and the operator (resolving a dispute) can cancel a locked escrow.
+
+### Endpoints
+
+`POST /api/v1/users`, `POST /api/v1/escrows`, `GET /api/v1/escrows/{id}`, `POST .../accept`, `GET .../invoice`, `POST .../release`, `POST .../cancel`, `POST .../dispute`, `GET .../events`, `GET /api/v1/operator/escrows`, `GET /health`. Errors are always `{"error": {"code", "message"}}`.
+
+### Safety properties (each has a test)
+
+- The API only reports `LOCKED`, `SETTLED` or `REFUNDED` once the node has; the tests feed node events in exactly as the runner would.
+- Release secrets must be exactly 64 hex characters. `123456`, empty, 31 bytes and non-hex are rejected with 400, a wrong 32-byte value with 422, and neither changes state or reaches the node.
+- The preimage is never echoed back, never stored, and request bodies are not logged. The escrow view never includes the invoice (only the buyer's `/invoice` does, and only while it is payable).
+- `Idempotency-Key` on create returns the first result instead of a second escrow; the same key with a different body is rejected (422); keys are per user. The other state-changing calls are idempotent by state (a repeated release returns the settled escrow with one node call).
+- Rate limiting: 120 requests per minute per caller (token hash, or address when anonymous) and 10 registrations per minute per address, with `Retry-After`.
+- Request bodies are capped at 16 KiB (413), requests time out at 30 s, and every response carries an `x-request-id` that is also propagated into logs.
+- Node outage: calls return 503 `node_unavailable` and leave state untouched; `/health` reports `degraded` with 503.
+
+### Live check against the regtest network (`scripts/demo.sh`)
+
+With `toshi-server` running and `OPERATOR_TOKEN` set, the script runs both PRD demo paths over real HTTP with real Lightning payments:
+
+1. Happy path: seller creates, buyer accepts and pays, state becomes `LOCKED` from the node's event, a wrong secret gets `wrong_preimage`, the right secret gets `SETTLED`.
+2. Refund path: a 62-second escrow is locked and nobody acts; at the deadline it becomes `REFUNDED` automatically.
+
+Run it: `OPERATOR_TOKEN=<24+ chars> ./target/debug/toshi-server &` then `OPERATOR_TOKEN=... ./scripts/demo.sh`. Also watched in the same session: an unpaid invoice is cancelled by the scheduler when it expires and leaves the operator queue.
+
+### Things that went wrong on the way (worth knowing)
+
+- **Stale regtest chain makes `/health` say degraded.** LND reports `synced_to_chain: false` when the newest block is over two hours old, and nothing mines on regtest unless asked. The health check is correct to report it, so I did not loosen it; `demo.sh` mines one block first.
+- **Peer links drop when containers restart**, leaving channels inactive and payments failing with `INSUFFICIENT_BALANCE` / `NO_ROUTE`. `setup.sh` now re-establishes the peer connections on every run.
+- An oversized body first returned 400 because my JSON wrapper flattened every rejection; it now keeps the real status (413).
+- Two stale held HTLCs (2000 sats) remain from the earlier broken-event-loop test runs; they are harmless and LND will cancel them as blocks are mined.
+
+### Known limitations
+
+- **Buyers are invited by id.** The seller names the buyer's user id when creating the escrow. A shareable open-offer link where whoever opens it becomes the buyer would need the core model to allow an unset buyer.
+- The idempotency cache lives in memory, so it is lost on restart (the escrow itself is not).
+- Rate limiting is in-process and keyed by direct peer address; behind a reverse proxy it would need the forwarded address.
+- The server uses `admin.macaroon` by default; a macaroon limited to invoice operations should replace it.
+- No CORS configuration yet, which the web frontend will need.
+
+---
+
 ## Next
 
-Phase 3: the API. An Axum server wiring the service, store and runner together, with `/health` (including node connectivity), the escrow endpoints from the PRD, per-escrow authorization for buyer, seller and operator, and idempotency keys on state-changing calls.
+Phase 4: the web frontend (Next.js): buyer and seller views with lock status, countdown, and a QR release. Before that, decide how the buyer hands the secret to the seller (QR of the 64-hex secret) and add CORS to the API.

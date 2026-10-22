@@ -2,3 +2,6 @@ regtest/creds/
 target/
 node_modules/
 .env
+*.db
+*.db-shm
+*.db-wal

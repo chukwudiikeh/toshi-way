@@ -31,6 +31,8 @@ pub trait LightningAdapter: Send + Sync {
     async fn create_hold_invoice(&self, req: HoldInvoiceRequest) -> Result<String, AdapterError>;
     async fn settle_invoice(&self, preimage: &Preimage) -> Result<(), AdapterError>;
     async fn cancel_invoice(&self, payment_hash: &PaymentHash) -> Result<(), AdapterError>;
+    /// Cheap reachability check for health reporting.
+    async fn ping(&self) -> Result<(), AdapterError>;
     /// `None` if the node has no such invoice.
     async fn lookup_invoice(&self, payment_hash: &PaymentHash)
         -> Result<Option<NodeInvoice>, AdapterError>;
