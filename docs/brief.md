@@ -76,7 +76,7 @@ Authentication is `Authorization: Bearer <token>`. `GET /health` and `POST /api/
 | POST | `/api/v1/escrows/{id}/dispute` | buyer, seller | `{reason}` (1 to 500 chars) | escrow |
 | GET | `/api/v1/escrows/{id}/events` | buyer, seller, operator | | `{audit: [...], node_events: [...]}` |
 | GET | `/api/v1/operator/escrows` | operator | | `{escrows: [...]}` all active ones |
-| GET | `/health` | anyone | | `{status, node}`; 503 when the node is unreachable |
+| GET | `/health` | anyone | | `{status, node, server_time}`; 503 when the node is unreachable |
 
 An escrow looks like:
 
@@ -185,6 +185,8 @@ web/app/...           pages above
 ## 5. One backend gap you should know about
 
 **Clock skew.** The countdowns compare `deadline_at` (server clock) with the browser's clock. If the user's clock is wrong the countdown lies, and a user may think they have time when the server will refuse with `too_late`. The API has no server-time field yet. The cleanest fix is to add `server_time` (unix seconds) to the `/health` response or to the escrow view, and have the client compute an offset. It is a few lines in `escrow-api/src/routes.rs`. Make this small change yourself or ask the repo owner. Until then, treat the countdown as indicative and let the server's answer win.
+
+*Done in phase 4 step 2: `/health` returns `server_time` and the web app corrects its countdowns with it (see `docs/flow.md`, section 12).*
 
 ## 6. Testing and done criteria
 
