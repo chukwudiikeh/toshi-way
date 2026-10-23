@@ -279,6 +279,38 @@ Frontend design decisions made before writing it:
 
 ---
 
+## 12. Phase 4, step 2: the web app
+
+The screens from the brief, in `web/`: home/account, new escrow (seller), the escrow page by role and state, and the operator queue.
+
+- **Structure.** `lib/api.ts` is the only place that talks to the API: bearer token, Zod-parsed responses, the `{error: {code, message}}` format, and 401 handling (a 401 on the session's token signs out). `lib/session.ts` is the only place that touches the token in `localStorage`. `lib/secret.ts` generates `P`, hashes it, validates 64-hex input and builds/parses `#release=` links. Pages are thin server components; the screens are client components because everything depends on the token in the browser.
+- **Secret handling.** `P` is 32 bytes from `crypto.getRandomValues`, stored under `toshi.secret.<escrow id>` **before** the accept call goes out, so a lost response can't lose it. Only `sha256(P)` is sent. The buyer's page checks the stored secret against the escrow's `payment_hash` before showing a release QR, and warns if it is missing or doesn't match. The QR encodes `/escrows/<id>#release=<P>` and is hidden until the buyer confirms they have the goods. The escrow page takes the fragment, removes it with `history.replaceState`, keeps it in memory only, and waits for a button press. QR codes are generated locally (`qrcode.react`). No third-party scripts or fonts (the template's Google font was removed).
+- **State comes from the server.** Every action renders the escrow the API returns; the page polls every 2 s until a final state. `invalid_state` and `too_late` trigger a refetch instead of an error. Network failures keep the last known state on screen with a "reconnecting" note and polling continues.
+- **Clock skew (brief section 5).** `/health` now returns `server_time` (one line in `escrow-api/src/routes.rs`, asserted in the health test). The client measures an offset once per page load and runs countdowns on server time; they are labelled as indicative.
+- **Sign-in detects the role.** The API has no "who am I" call. A pasted token is tried against `/api/v1/operator/escrows`: 200 means operator, 403 means user. A user's own id is learned from their first escrow (or typed in), since nothing else returns it.
+
+Tests: 44 unit tests (Vitest: secret generation and the `sha256` vector, 63/65-char/short/non-hex rejection, link round trip, schemas against the documented sample, form limits, API client error handling and 401 sign-out). `e2e/escrow.spec.ts` (Playwright, system Chrome) runs both demo paths in two browser profiles against the live regtest stack, paying with `lncli` from the buyer node. Both pass:
+
+1. Happy path: create → accept → pay → both see LOCKED → wrong secret refused (state unchanged) → 6-digit code refused client-side → buyer reveals QR → seller opens the release link → SETTLED on both screens. The test records every request from both browsers and asserts the secret appears in exactly one: the seller's `/release`. A third account opening the escrow gets "not found". The buyer has no cancel button while locked.
+2. Refund path: a 62-second hold, nobody acts, both screens flip to REFUNDED on their own.
+
+Checked by hand as well: stopping `toshi-server` mid-escrow shows "can't reach the server" over the last known state; restarting it clears the warning and the page follows the next state change. The operator can sign in, sees disputes first, and can cancel from the queue (checked at phone width). Neither the server log nor the Next.js log contains any 64-hex string, and no request carried `release=`.
+
+### Things that went wrong on the way
+
+- **A release link opened in a tab already showing that escrow did nothing.** Only the fragment changed, so there was no page load and the mount-time reader never ran. The e2e test caught it; the page now also listens for `hashchange`.
+- **Port 3000 was taken** on my machine by an unrelated app, so the server ran with `BIND=127.0.0.1:3002` and the web app with `NEXT_PUBLIC_API_URL=http://127.0.0.1:3002`. Worth knowing when the API seems to answer with someone else's HTML.
+- `vitest@5` wants `@types/node` 22 or newer; the scaffold had 20. Bumped to 22, which matches the Node version in the brief.
+- Next 16 with `cacheComponents`: `useParams` in a client component on a dynamic route must sit inside `<Suspense>`, or the build fails. The escrow page wraps it.
+
+### Known gaps found while building
+
+- **A `CREATED` offer can't be withdrawn and never expires.** `cancel` refuses `CREATED` (there is no invoice to cancel yet) and the scheduler only looks at invoices and holds, so an offer the buyer never accepts stays in the operator queue forever. Small backend fix: let the seller or operator move `CREATED` straight to a final state.
+- No "who am I" endpoint, hence the role detection above. `GET /api/v1/me` returning `{id, role}` would simplify sign-in.
+- The release link uses `window.location.origin` unless `NEXT_PUBLIC_APP_URL` is set. For a phone on the LAN to open it, set that to an address the phone can reach (and add it to `CORS_ORIGINS`).
+
+---
+
 ## Next
 
-Phase 4, step 2: write the app: account sign-in, create escrow (seller), escrow page by role (buyer pays and shows the release QR, seller sees the lock and releases), and the operator queue. Validate forms and API responses with Zod, and test the secret generation and release-link handling.
+Phase 4 hardening: let `CREATED` offers be withdrawn or expire, a `GET /api/v1/me` endpoint, a restricted invoice macaroon instead of `admin.macaroon`, and a restart test against the real node. Optional: WebLN one-click payment, an in-app QR scanner.
