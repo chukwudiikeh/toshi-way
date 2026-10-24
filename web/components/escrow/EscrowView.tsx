@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { describeError } from "@/lib/api";
 import { formatLocalTime, formatSats } from "@/lib/clock";
+import { formatFiat, formatRate } from "@/lib/fiat";
 import { parseReleaseFragment } from "@/lib/secret";
 import { useSession } from "@/lib/session";
 import type { NewUser } from "@/lib/schemas";
@@ -153,6 +154,18 @@ function Summary({ escrow }: { escrow: NonNullable<ReturnType<typeof useEscrow>[
         <div>
           <dt className="text-neutral-500">Amount</dt>
           <dd className="font-mono text-lg font-semibold tabular-nums">{formatSats(escrow.amount_sats)}</dd>
+          {escrow.fiat && (
+            <dd
+              className="text-sm text-neutral-600 dark:text-neutral-400"
+              title="Display only. Worked out once when the offer was made and never updated; the price of bitcoin moves, so what this sum is worth now will differ."
+            >
+              ≈ {formatFiat(escrow.fiat.amount_minor, escrow.fiat.currency, escrow.fiat.exponent)} when offered
+              <span className="block text-xs text-neutral-500">
+                at {formatRate(escrow.fiat.rate_minor_per_btc, escrow.fiat.currency, escrow.fiat.exponent)} per bitcoin ·{" "}
+                {escrow.fiat.source} · {formatLocalTime(escrow.fiat.quoted_at)} · display only
+              </span>
+            </dd>
+          )}
         </div>
         <div>
           <dt className="text-neutral-500">Created</dt>

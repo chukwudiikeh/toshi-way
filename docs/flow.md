@@ -453,6 +453,36 @@ The features were well ahead of the readiness work, so this step is about being 
 
 ---
 
+## 20. Fiat display
+
+The PRD's FR-16: an optional fiat value shown beside the sats, quote locked at creation, display only, no conversion.
+
+**Decisions.**
+- *The sats are the truth.* The escrow stays in sats; nothing in the escrow logic reads the fiat value (it is not even in the state machine). The form does not accept a fiat amount to convert into sats, which would make it a conversion.
+- *Locked at creation.* The seller picks a currency; the server takes a rate once and stores the currency, rate, computed amount, time and source. Rate and amount are integers in the currency's minor unit (minor units per bitcoin, rounded half up in 128-bit), so no float is ever stored; the web preview does the same arithmetic with BigInt, and the tests pin the two to the same answers.
+- *The server fetches rates, the browser never does*, preserving the "no third-party calls from the page" rule. `FIAT_PROVIDER` selects `off` (default), `coingecko`, `mempool` or `fixed:...` (labelled "demo rate", because regtest has no market). Live rates are cached for a minute and a stale one served for up to ten minutes if the feed is down.
+- *Failure is explicit.* If a value was requested and cannot be produced, creation fails (`rate_unavailable`, `unsupported_currency`, `fiat_disabled`) instead of silently dropping it. Leaving the value out always works, so a price feed can never block an escrow. A zero, negative, non-finite or absurd rate is treated as a broken feed.
+- *Honest framing in the UI.* "≈ ₦4,875.00 when offered", the rate, source, time and "display only", with a tooltip saying bitcoin's price moves.
+
+**Persistence.** Five nullable columns on `escrows` (currency, amount, rate, quoted-at, source): SQLite migration 005, PostgreSQL migration 004. The shared store contract now round-trips a quote and checks a transition leaves it alone.
+
+**Verified.**
+- Rust (131 workspace tests, up from 106): 7 on the quote maths (rounding, yen with no decimals, overflow refused, unsupported currencies, bad rates), 11 on providers (both feeds' JSON shapes, garbage and broken prices refused, the cache making one call per minute, stale-while-error for ten minutes then giving up, recovery, junk never poisoning the cache) and 7 over HTTP (off by default, the rates endpoints, the same locked value for buyer, seller and list, the value staying put when the market halves and then the feed dies, through settlement, explicit errors with nothing created, the sats limits unchanged, idempotency keys covering the currency).
+- Against the real services: both live feeds return the shapes the parsers expect (CoinGecko all 13 currencies, mempool.space its 7 without naira), and an opt-in test (`cargo test -p escrow-api --lib -- --ignored live_feeds`) pulls sane prices through the real HTTP client.
+- Web: 12 new unit tests (the integer maths with the server's own examples, formatting for dollars, naira and yen, schemas, the form). Browser: a new test chooses naira, sees the preview, creates the escrow, and checks the buyer's page and list show the same locked value; the rehearsal's first scene now shows it. All 11 browser tests and the 3-scene rehearsal pass.
+
+**A regression it exposed.** The form now has two `<select>` elements (currency and hold unit), and every test selected the hold unit with a bare `locator("select")`. The hold-time amount and unit now have their own accessible names (`Hold time amount`, `Hold time unit`), which is better for screen readers too, and the tests use them. Exact-match on "Hold time" hung because the wrapping label also contains the hint text.
+
+**Not done.** No fiat amount entry (that would be conversion), no live "worth now" figure on an existing escrow, no per-user default currency, and no currencies beyond the 13. The demo environment uses fixed demo rates; a real deployment sets `FIAT_PROVIDER=coingecko` or `mempool`.
+
+---
+
+## 21. A signet attempt that was abandoned
+
+Tried to test our hold timing on the real public signet with two LND nodes of our own, since regtest blocks are instant and real ones are not. Research first: almost no mobile wallets support signet Lightning, so it could answer the timing question but not the real-wallet one. Then the environment pushed back: the disk had 4 GB free (freed by deleting 4 GB of rebuildable compiler cache), and containers here have no internet access, so bitcoind had to run on the host network. A pruned signet node did sync (5% of headers in the first minute, 41% after about nine), but the work was abandoned as taking too much space, and every file, container and volume from it was removed; none of it was committed. The two questions it was meant to answer are still open: whether our timing numbers hold on real 10-minute blocks (the 71-block hold window and LND's 12-block margin were measured only on regtest), and how real phone wallets treat a payment that stays pending for hours.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

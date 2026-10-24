@@ -101,7 +101,9 @@ start_server() {
   # Each service gets its own redirected, detached shell and is exec'd, so the pid file holds the real
   # process and nothing keeps this script's output pipe open after it exits.
   # A room full of people behind one network address would trip the default 10 sign-ups a minute.
+  # Regtest has no market, so the fiat values use fixed, clearly labelled "demo rate"s.
   ( exec env DATABASE_PATH="$DEMO/toshi.db" ALLOW_PRIVATE_NODE_ADDRESSES=1 REGISTER_LIMIT_PER_MIN=200 \
+      FIAT_PROVIDER="${FIAT_PROVIDER:-fixed:USD=65000,EUR=60000,GBP=51000,NGN=97500000}" \
       ./target/debug/toshi-server ) \
     > "$DEMO/server.log" 2>&1 < /dev/null &
   echo $! > "$DEMO/server.pid"
@@ -139,7 +141,7 @@ summary() {
 
 Everything is up.
 
-  App            $WEB
+  App            $WEB   (fiat values use demo rates: 65,000 USD / 97,500,000 NGN per bitcoin)
   API            $API   (health: $(curl -fsS "$API/health" 2>/dev/null || echo unreachable))
   Operator token $OPERATOR_TOKEN   (sign in at $WEB/operator)
 
