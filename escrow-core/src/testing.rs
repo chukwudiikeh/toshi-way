@@ -16,6 +16,7 @@ fn escrow(id: &str) -> Escrow {
         arbiter_sealed: None,
         arbiter_confirmed_at: None,
         node: NodeKind::Shared,
+        fiat: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "parcel".into(),
@@ -137,6 +138,25 @@ pub async fn store_contract(store: &dyn Store) {
     let confirm = EscrowUpdate { arbiter_confirmed_at: Some(47), ..Default::default() };
     let e = store.transition("arb", InvoiceIssued, confirm, audit("arb", InvoiceIssued, InvoiceIssued, 47)).await.unwrap();
     assert_eq!((e.state, e.arbiter_confirmed_at, e.arbiter_sealed.as_deref()), (InvoiceIssued, Some(47), Some("sealed-blob")));
+
+    // A fiat quote is stored exactly as given, survives later transitions, and absent means absent.
+    let mut priced = escrow("priced");
+    priced.created_at = 40;
+    priced.fiat = Some(crate::fiat::FiatQuote {
+        currency: "NGN".into(),
+        amount_minor: 7_312_500,
+        rate_minor_per_btc: 9_750_000_000,
+        quoted_at: 39,
+        source: "demo rate".into(),
+    });
+    store.insert(priced.clone()).await.unwrap();
+    assert_eq!(store.get("priced").await.unwrap(), Some(priced.clone()));
+    let moved = store
+        .transition("priced", Created, EscrowUpdate::default(), audit("priced", Created, InvoiceIssued, 41))
+        .await
+        .unwrap();
+    assert_eq!(moved.fiat, priced.fiat, "the quote is locked: a transition does not touch it");
+    assert_eq!(store.get("a").await.unwrap().unwrap().fiat, None);
 
     // An open offer has no buyer until someone accepts; the claim is applied with the transition
     // and an update without a buyer leaves it alone.
