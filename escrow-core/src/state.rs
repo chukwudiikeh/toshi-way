@@ -53,6 +53,7 @@ impl EscrowState {
         matches!(
             (self, to),
             (Created, InvoiceIssued)
+                | (Created, ExpiredUnpaid)
                 | (InvoiceIssued, Locked)
                 | (InvoiceIssued, ExpiredUnpaid)
                 | (Locked, Settled)
@@ -89,6 +90,7 @@ mod tests {
     fn allowed_transitions() {
         for (from, to) in [
             (Created, InvoiceIssued),
+            (Created, ExpiredUnpaid),
             (InvoiceIssued, Locked),
             (InvoiceIssued, ExpiredUnpaid),
             (Locked, Settled),

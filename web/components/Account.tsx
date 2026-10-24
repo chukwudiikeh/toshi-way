@@ -76,13 +76,9 @@ export function TokenReveal({ user, onDone }: { user: NewUser; onDone: () => voi
   );
 }
 
-/**
- * Sign in with a token. The role is detected by asking the operator endpoint: operators get the
- * queue, users get 403.
- */
+/** Sign in with a token. `/api/v1/me` tells us the account's id and role. */
 export function SignIn({ title = "Sign in with a token", note }: { title?: string; note?: string }) {
   const [token, setToken] = useState("");
-  const [userId, setUserId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,18 +93,9 @@ export function SignIn({ title = "Sign in with a token", note }: { title?: strin
     setError(null);
     try {
       const opts = { token: t, keepSessionOn401: true };
-      try {
-        await api.operatorQueue(opts);
-        setSession({ token: t, kind: "operator", userId: null });
-        return;
-      } catch (err) {
-        if (!(err instanceof ApiError) || err.code !== "forbidden") throw err;
-      }
-      const { escrows } = await api.listMine(opts);
-      // The API has no "who am I" call; an escrow we are party to tells us our id.
-      const first = escrows.find((x) => x.your_role !== "operator");
-      const known = first ? (first.your_role === "buyer" ? first.buyer_id : first.seller_id) : null;
-      setSession({ token: t, kind: "user", userId: known ?? (userId.trim() || null) });
+      const me = await api.me(opts);
+      const operator = me.role === "operator";
+      setSession({ token: t, kind: operator ? "operator" : "user", userId: operator ? null : me.id });
     } catch (err) {
       setError(
         err instanceof ApiError && err.code === "unauthorized"
@@ -133,16 +120,6 @@ export function SignIn({ title = "Sign in with a token", note }: { title?: strin
             onChange={(e) => setToken(e.target.value)}
             className={`${inputClass} font-mono`}
             placeholder="tw_…"
-          />
-        </Field>
-        <Field label="Your user id (optional)" hint="Only used to show you your id; it is filled in automatically once you have an escrow.">
-          <input
-            autoComplete="off"
-            spellCheck={false}
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            className={`${inputClass} font-mono`}
-            placeholder="u_…"
           />
         </Field>
         {error && <Notice tone="error">{error}</Notice>}

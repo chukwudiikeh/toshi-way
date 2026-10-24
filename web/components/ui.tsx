@@ -146,7 +146,7 @@ export const stateLabels: Record<EscrowState, string> = {
   DISPUTED: "Disputed",
   SETTLED: "Settled",
   REFUNDED: "Refunded",
-  EXPIRED_UNPAID: "Expired unpaid",
+  EXPIRED_UNPAID: "Ended unpaid",
   FAILED: "Needs attention",
 };
 

@@ -62,7 +62,7 @@ export function NewEscrow() {
       setErrors(next);
       return;
     }
-    if (parsed.data.buyer_id === session?.userId) {
+    if (parsed.data.buyer_id && parsed.data.buyer_id === session?.userId) {
       setErrors({ buyer_id: "That's your own id. Enter the buyer's id." });
       return;
     }
@@ -91,7 +91,11 @@ export function NewEscrow() {
       </div>
       <Card>
         <form onSubmit={submit} className="space-y-4" noValidate>
-          <Field label="Buyer's user id" hint="Ask the buyer for it; they see it on their home page." error={errors.buyer_id}>
+          <Field
+            label="Buyer's user id (optional)"
+            hint="Leave empty to get a link anyone can open: the first person to accept becomes the buyer. Fill it in to invite one specific person."
+            error={errors.buyer_id}
+          >
             <input
               value={values.buyer_id}
               onChange={(e) => set("buyer_id", e.target.value)}

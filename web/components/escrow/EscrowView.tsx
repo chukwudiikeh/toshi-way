@@ -7,7 +7,8 @@ import { describeError } from "@/lib/api";
 import { formatLocalTime, formatSats } from "@/lib/clock";
 import { parseReleaseFragment } from "@/lib/secret";
 import { useSession } from "@/lib/session";
-import { SignIn } from "../Account";
+import type { NewUser } from "@/lib/schemas";
+import { CreateAccount, SignIn, TokenReveal } from "../Account";
 import { Card, CopyField, Notice, Spinner, StateBadge } from "../ui";
 import { useEscrow, useEvents } from "./hooks";
 import { EscrowPanel } from "./panels";
@@ -42,8 +43,11 @@ export function EscrowView() {
   const { id } = useParams<{ id: string }>();
   const session = useSession();
   const fromLink = useReleaseFromLink();
+  const [created, setCreated] = useState<NewUser | null>(null);
 
   if (session === undefined) return <Spinner />;
+  // Someone who followed an offer link has no account yet: let them make one right here.
+  if (created) return <TokenReveal user={created} onDone={() => setCreated(null)} />;
 
   return (
     <div className="space-y-6">
@@ -60,7 +64,10 @@ export function EscrowView() {
         </Notice>
       )}
       {!session ? (
-        <SignIn title="Sign in to see this escrow" />
+        <div className="grid gap-6 md:grid-cols-2">
+          <CreateAccount onCreated={setCreated} />
+          <SignIn title="Already have an account?" note="Sign in to see this escrow." />
+        </div>
       ) : (
         <Loaded id={id} linkSecret={fromLink?.secret ?? null} />
       )}
@@ -132,7 +139,7 @@ function Summary({ escrow }: { escrow: NonNullable<ReturnType<typeof useEscrow>[
             Escrow <CopyField value={escrow.id} />
           </div>
           <div>
-            Buyer <CopyField value={escrow.buyer_id} />
+            Buyer {escrow.buyer_id ? <CopyField value={escrow.buyer_id} /> : "not chosen yet (open offer)"}
           </div>
           <div>
             Seller <CopyField value={escrow.seller_id} />

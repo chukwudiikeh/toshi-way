@@ -589,3 +589,114 @@ async fn the_view_exposes_invoice_expiry_for_countdowns() {
     let (_, v) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&buyer.token), None).await;
     assert_eq!(v["invoice_expires_at"], T0 + 600);
 }
+
+#[tokio::test]
+async fn seller_can_withdraw_an_unaccepted_offer() {
+    let app = app().await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&seller.token), None).await;
+    assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("EXPIRED_UNPAID")), "{v}");
+    assert_eq!(app.node.cancel_calls(), 0, "no invoice exists, so the node is never called");
+
+    // Repeating it is a no-op, and the buyer can no longer accept.
+    let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&seller.token), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app.accept(&buyer, &id, &secret(1)).await.0, StatusCode::CONFLICT);
+    let (_, v) = app.call(Method::GET, "/api/v1/operator/escrows", Some(OPERATOR_TOKEN), None).await;
+    assert!(v["escrows"].as_array().unwrap().is_empty(), "withdrawn offers leave the queue");
+}
+
+#[tokio::test]
+async fn buyer_can_decline_an_offer_and_a_stranger_cannot() {
+    let app = app().await;
+    let (seller, buyer, other) = (app.register().await, app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&other.token), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&buyer.token), None).await;
+    assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("EXPIRED_UNPAID")));
+}
+
+#[tokio::test]
+async fn unaccepted_offers_expire_at_their_deadline() {
+    let app = app().await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    app.service.tick(T0 + 3599).await.unwrap();
+    assert_eq!(app.state(&seller.token, &id).await, "CREATED");
+    app.service.tick(T0 + 3600).await.unwrap();
+    assert_eq!(app.state(&seller.token, &id).await, "EXPIRED_UNPAID");
+}
+
+#[tokio::test]
+async fn me_reports_the_callers_id_and_role() {
+    let app = app().await;
+    let user = app.register().await;
+    let (s, v) = app.call(Method::GET, "/api/v1/me", Some(&user.token), None).await;
+    assert_eq!((s, v["id"].as_str(), v["role"].as_str()), (StatusCode::OK, Some(user.id.as_str()), Some("user")));
+    let (s, v) = app.call(Method::GET, "/api/v1/me", Some(OPERATOR_TOKEN), None).await;
+    assert_eq!((s, v["role"].as_str()), (StatusCode::OK, Some("operator")));
+    let (s, _) = app.call(Method::GET, "/api/v1/me", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_open_offer_can_be_claimed_by_whoever_opens_the_link() {
+    let app = app().await;
+    let (seller, alice, bob) = (app.register().await, app.register().await, app.register().await);
+    let (s, v) = app
+        .call(
+            Method::POST,
+            "/api/v1/escrows",
+            Some(&seller.token),
+            Some(json!({"amount_sats": 1000, "description": "open parcel", "hold_secs": 3600})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert!(v["buyer_id"].is_null());
+    let id = v["id"].as_str().unwrap().to_string();
+
+    // Anyone signed in who has the link can see it, as a would-be buyer, but it is not in their list
+    // and they cannot decline someone else's offer.
+    let (s, v) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&alice.token), None).await;
+    assert_eq!((s, v["your_role"].as_str(), v["state"].as_str()), (StatusCode::OK, Some("buyer"), Some("CREATED")));
+    let (_, list) = app.call(Method::GET, "/api/v1/escrows", Some(&alice.token), None).await;
+    assert!(list["escrows"].as_array().unwrap().is_empty());
+    let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&alice.token), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(app.state(&seller.token, &id).await, "CREATED");
+
+    // The seller cannot take their own offer; alice can.
+    let (s, _) = app.accept(&seller_as_buyer(&seller), &id, &secret(9)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let p = secret(1);
+    let (s, v) = app.accept(&alice, &id, &p).await;
+    assert_eq!((s, v["state"].as_str(), v["buyer_id"].as_str()), (StatusCode::OK, Some("INVOICE_ISSUED"), Some(alice.id.as_str())), "{v}");
+
+    // Now it is alice's: bob gets 404, and it shows in alice's list.
+    let (s, _) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&bob.token), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(app.accept(&bob, &id, &secret(2)).await.0, StatusCode::NOT_FOUND);
+    let (_, list) = app.call(Method::GET, "/api/v1/escrows", Some(&alice.token), None).await;
+    assert_eq!(list["escrows"].as_array().unwrap().len(), 1);
+
+    // The rest of the flow is the ordinary one.
+    app.pay(&p).await;
+    assert_eq!(app.state(&alice.token, &id).await, "LOCKED");
+}
+
+fn seller_as_buyer(seller: &Account) -> Account {
+    Account { id: seller.id.clone(), token: seller.token.clone() }
+}
+
+#[tokio::test]
+async fn a_blank_buyer_id_means_an_open_offer_and_an_unknown_one_is_still_rejected() {
+    let app = app().await;
+    let seller = app.register().await;
+    let body = |buyer: &str| json!({"buyer_id": buyer, "amount_sats": 1000, "description": "x", "hold_secs": 3600});
+    let (s, v) = app.call(Method::POST, "/api/v1/escrows", Some(&seller.token), Some(body("  "))).await;
+    assert_eq!((s, v["buyer_id"].is_null()), (StatusCode::CREATED, true), "{v}");
+    let (s, v) = app.call(Method::POST, "/api/v1/escrows", Some(&seller.token), Some(body("u_nobody"))).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("unknown_buyer")));
+}

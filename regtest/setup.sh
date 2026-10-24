@@ -89,6 +89,13 @@ for n in "${NODES[@]}"; do
   chmod 644 "$CREDS/$n/"*
 done
 
+# The service only ever needs invoice operations (add, settle, cancel, look up, subscribe) and
+# GetInfo for /health. Bake a macaroon limited to exactly that for the seller node it talks to.
+echo "==> baking the restricted service macaroon (seller)"
+$DC exec -T seller sh -c 'rm -f /tmp/toshi.macaroon; lncli --network=regtest bakemacaroon invoices:read invoices:write info:read --save_to=/tmp/toshi.macaroon >/dev/null'
+docker cp "$($DC ps -q seller):/tmp/toshi.macaroon" "$CREDS/seller/toshi.macaroon"
+chmod 644 "$CREDS/seller/toshi.macaroon"
+
 echo "==> done"
 for n in "${NODES[@]}"; do
   echo "  $n  $(pubkey "$n")  channels=$(lncli "$n" getinfo | jget "['num_active_channels']")"
