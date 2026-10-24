@@ -4,17 +4,18 @@
 use std::{future::pending, sync::Arc, time::Duration};
 
 use escrow_core::{
-    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
-    model::{NodeInvoiceState, Preimage},
+    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter, NodeConnectError, NodeCredentials, NodeDirectory},
+    model::{NodeInvoiceState, NodeKind, Preimage, Role, User},
     service::{EscrowService, NewEscrow},
     state::EscrowState,
+    store::UserStore,
     timing::TimingConfig,
 };
-use escrow_lnd::{install_crypto_provider, runner, LndAdapter};
+use escrow_lnd::{creds::CredentialKey, directory::LndDirectory, install_crypto_provider, runner, LndAdapter};
 use escrow_sqlite::SqliteStore;
 use fedimint_tonic_lnd::{
     connect,
-    lnrpc::payment::PaymentStatus,
+    lnrpc::{payment::PaymentStatus, ChannelBalanceRequest},
     routerrpc::SendPaymentRequest,
     Client,
 };
@@ -153,7 +154,7 @@ fn offer(hold_secs: i64) -> NewEscrow {
     }
 }
 
-async fn state_of(svc: &Svc, id: &str) -> EscrowState {
+async fn state_of<D: NodeDirectory>(svc: &EscrowService<D, Arc<SqliteStore>>, id: &str) -> EscrowState {
     svc.get(id).await.unwrap().state
 }
 
@@ -162,8 +163,8 @@ async fn state_of(svc: &Svc, id: &str) -> EscrowState {
 async fn service_settles_and_refunds_driven_by_live_node_events() {
     let (svc, seller) = service().await;
     let events = tokio::spawn({
-        let (svc, seller) = (svc.clone(), seller.clone());
-        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+        let svc = svc.clone();
+        async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }
     });
 
     // Happy path: lock via the node event, then release with the preimage.
@@ -199,8 +200,8 @@ async fn service_settles_and_refunds_driven_by_live_node_events() {
 async fn scheduler_refunds_automatically_at_the_deadline() {
     let (svc, seller) = service().await;
     let events = tokio::spawn({
-        let (svc, seller) = (svc.clone(), seller.clone());
-        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+        let svc = svc.clone();
+        async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }
     });
     let scheduler = tokio::spawn({
         let svc = svc.clone();
@@ -241,8 +242,8 @@ async fn restart_mid_escrow_reconciles_with_the_live_node() {
     let store = Arc::new(SqliteStore::open(db).await.unwrap());
     let svc = Arc::new(EscrowService::new(seller.clone(), store.clone(), TimingConfig::default()));
     let events = tokio::spawn({
-        let (svc, seller) = (svc.clone(), seller.clone());
-        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+        let svc = svc.clone();
+        async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }
     });
     let mut ids = Vec::new();
     let mut invoices = Vec::new();
@@ -293,4 +294,117 @@ async fn restart_mid_escrow_reconciles_with_the_live_node() {
     // Each transition is audited exactly once, restart or not.
     assert_eq!(svc.audit_log(&ids[0]).await.unwrap().len(), 3);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Sellers who bring their own node ----------------------------------------------------------
+
+fn creds_text(node: &str, file: &str) -> String {
+    std::fs::read_to_string(creds(node, file)).unwrap()
+}
+
+fn creds_hex(node: &str, file: &str) -> String {
+    hex::encode(std::fs::read(creds(node, file)).unwrap())
+}
+
+/// What a seller pastes into the app for their own node.
+fn node_credentials(node: &str, port: u16) -> NodeCredentials {
+    NodeCredentials {
+        address: format!("https://localhost:{port}"),
+        tls_cert: creds_text(node, "tls.cert"),
+        macaroon_hex: creds_hex(node, "toshi.macaroon"),
+    }
+}
+
+/// Spendable sats on a node's channels, read with that node's admin macaroon.
+async fn local_balance(node: &str, port: u16) -> u64 {
+    install_crypto_provider();
+    let mut client = connect(format!("https://localhost:{port}"), creds(node, "tls.cert"), creds(node, "admin.macaroon"))
+        .await
+        .expect("is ./regtest/setup.sh running?");
+    let bal = client.lightning().channel_balance(ChannelBalanceRequest {}).await.unwrap().into_inner();
+    bal.local_balance.map(|a| a.sat).unwrap_or(0)
+}
+
+#[tokio::test]
+#[ignore = "needs the regtest network (including seller2)"]
+async fn each_seller_is_paid_on_their_own_node() {
+    let store = Arc::new(SqliteStore::in_memory().await.unwrap());
+    for id in ["alice", "bob"] {
+        store.insert_user(User { id: id.into(), role: Role::User, created_at: 0 }, format!("hash-{id}")).await.unwrap();
+    }
+    let key = CredentialKey::from_hex(&CredentialKey::generate_hex()).unwrap();
+    // No shared node at all: the service cannot receive anyone's money.
+    let dir = LndDirectory::new(None, store.clone(), Some(key), CALL_TIMEOUT).allow_private_addresses(true);
+
+    // Without a node, a seller cannot create an escrow.
+    let svc = Arc::new(EscrowService::new(dir, store.clone(), TimingConfig::default()));
+    let seller_of = |id: &str| NewEscrow { seller_id: id.into(), buyer_id: None, ..offer(1800) };
+    assert!(matches!(
+        svc.create(seller_of("alice"), runner::unix_now()).await,
+        Err(escrow_core::service::ServiceError::Adapter(AdapterError::NoNode(_)))
+    ));
+
+    // A macaroon from a different node is refused, and so is a certificate that is not that node's.
+    let mut wrong_macaroon = node_credentials("seller2", 10004);
+    wrong_macaroon.macaroon_hex = creds_hex("seller", "toshi.macaroon");
+    assert!(matches!(
+        svc.directory().register_seller_node("alice", wrong_macaroon, 1).await,
+        Err(NodeConnectError::CheckFailed(_))
+    ));
+    let mut wrong_cert = node_credentials("seller2", 10004);
+    wrong_cert.tls_cert = creds_text("seller", "tls.cert");
+    assert!(matches!(
+        svc.directory().register_seller_node("alice", wrong_cert, 1).await,
+        Err(NodeConnectError::CheckFailed(_))
+    ));
+    assert!(svc.directory().seller_node_summary("alice").await.unwrap().is_none(), "failed attempts save nothing");
+
+    // Each seller connects their own node. The check makes and cancels a probe invoice on it.
+    let alice_creds = node_credentials("seller", 10003);
+    let macaroon_bytes = std::fs::read(creds("seller", "toshi.macaroon")).unwrap();
+    svc.directory().register_seller_node("alice", alice_creds, runner::unix_now()).await.unwrap();
+    svc.directory().register_seller_node("bob", node_credentials("seller2", 10004), runner::unix_now()).await.unwrap();
+
+    // The macaroon is encrypted at rest.
+    let saved = store.node_connection("alice").await.unwrap().unwrap();
+    assert!(!saved.macaroon_enc.windows(macaroon_bytes.len()).any(|w| w == macaroon_bytes.as_slice()));
+
+    let events = tokio::spawn({
+        let svc = svc.clone();
+        async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }
+    });
+
+    let (before_alice, before_bob) = (local_balance("seller", 10003).await, local_balance("seller2", 10004).await);
+    let (pa, pb) = (new_secret(), new_secret());
+    let a = svc.create(seller_of("alice"), runner::unix_now()).await.unwrap();
+    let b = svc.create(seller_of("bob"), runner::unix_now()).await.unwrap();
+    assert_eq!((a.node, b.node), (NodeKind::Own, NodeKind::Own));
+    let a = svc.accept(&a.id, pa.hash(), "buyer", runner::unix_now()).await.unwrap();
+    let b = svc.accept(&b.id, pb.hash(), "buyer", runner::unix_now()).await.unwrap();
+
+    // Each invoice exists on its own seller's node and not on the other's.
+    let (node_a, node_b) = (adapter("seller", 10003).await, adapter("seller2", 10004).await);
+    assert!(node_a.lookup_invoice(&pa.hash()).await.unwrap().is_some());
+    assert!(node_b.lookup_invoice(&pa.hash()).await.unwrap().is_none(), "alice's invoice is not on bob's node");
+    assert!(node_b.lookup_invoice(&pb.hash()).await.unwrap().is_some());
+    assert!(node_a.lookup_invoice(&pb.hash()).await.unwrap().is_none(), "bob's invoice is not on alice's node");
+
+    // The buyer pays both; both lock (each learned from its own node's events).
+    let (pay_a, pay_b) = (pay(a.invoice.clone().unwrap()), pay(b.invoice.clone().unwrap()));
+    wait_until("alice LOCKED", 30, || async { state_of(&svc, &a.id).await == EscrowState::Locked }).await;
+    wait_until("bob LOCKED", 30, || async { state_of(&svc, &b.id).await == EscrowState::Locked }).await;
+
+    // Releasing pays each seller on their own node.
+    assert_eq!(svc.release(&a.id, &pa, "alice", runner::unix_now()).await.unwrap().state, EscrowState::Settled);
+    assert_eq!(svc.release(&b.id, &pb, "bob", runner::unix_now()).await.unwrap().state, EscrowState::Settled);
+    assert_eq!(pay_a.await.unwrap(), PaymentStatus::Succeeded);
+    assert_eq!(pay_b.await.unwrap(), PaymentStatus::Succeeded);
+    wait_until("alice's node balance", 15, || async { local_balance("seller", 10003).await == before_alice + 1000 }).await;
+    wait_until("bob's node balance", 15, || async { local_balance("seller2", 10004).await == before_bob + 1000 }).await;
+
+    // Replacing a seller's node is picked up: the cached connection is dropped and rebuilt.
+    svc.directory().remove_seller_node("bob").await.unwrap();
+    assert!(matches!(svc.create(seller_of("bob"), runner::unix_now()).await, Err(_)));
+
+    events.abort();
 }
