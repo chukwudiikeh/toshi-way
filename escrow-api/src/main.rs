@@ -7,6 +7,9 @@
 //!   BIND             listen address (default 127.0.0.1:3000)
 //!   SHARED_NODE      "off" to require every seller to bring their own node (default "on")
 //!   NODE_CREDENTIAL_KEY  64 hex characters (openssl rand -hex 32); enables sellers' own nodes
+//!   RATE_LIMIT_PER_MIN       requests per minute per caller (default 120)
+//!   REGISTER_LIMIT_PER_MIN   account registrations per minute per address (default 10; raise it for a demo
+//!                            where many people share one network address)
 //!   ALLOW_PRIVATE_NODE_ADDRESSES  "1" to let sellers use private network addresses (regtest only)
 //!   LND_ADDR         shared node, default https://localhost:10003
 //!   LND_TLS_CERT     path to tls.cert
@@ -114,7 +117,15 @@ where
     let service = Arc::new(EscrowService::new(directory, store.clone(), TimingConfig::default()));
     ensure_operator(&store, &operator_token, runner::unix_now()).await.map_err(|e| e.message)?;
 
+    let limit = |name: &str, default: u32| -> u32 {
+        env(name, Some(&default.to_string())).parse().unwrap_or_else(|_| {
+            eprintln!("{name} must be a whole number");
+            std::process::exit(2);
+        })
+    };
     let config = ApiConfig {
+        rate_limit_per_min: limit("RATE_LIMIT_PER_MIN", 120),
+        register_limit_per_min: limit("REGISTER_LIMIT_PER_MIN", 10),
         cors_origins: env("CORS_ORIGINS", Some("http://localhost:3001,http://127.0.0.1:3001"))
             .split(',')
             .map(|o| o.trim().to_string())

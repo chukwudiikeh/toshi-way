@@ -124,6 +124,8 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 
 ## Demo script
 
+The full script (three scenes, talk track, limits and troubleshooting) is in [`demo.md`](demo.md), and `./scripts/demo-env.sh up` builds the environment it needs. The lead use case is a **courier delivery**. In outline:
+
 - **Happy path:** seller creates an offer, buyer accepts and pays, UI shows funds locked, buyer shows the release QR, seller scans it, payment settles.
 - **Refund path:** a second escrow with a short deadline expires and refunds automatically with no human action. This proves it is a real escrow.
 
@@ -172,11 +174,12 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Extras: WebLN one-click payment, camera scan of the release QR, PostgreSQL store (`DATABASE_URL`)
 - [x] Sellers bring their own node (non-goal lifted): per-seller node directory, encrypted credentials, `/api/v1/me/node`, "My node" page, second regtest seller node
 - [x] Arbitration (non-goal lifted): optional arbiter per escrow, buyer's secret sealed to them in the browser, confirmation, release-or-refund decision on the record
-- [ ] Demo rehearsal and choosing the lead use case
+- [x] Demo preparation: lead use case chosen (courier delivery), `scripts/demo-env.sh`, seeded cast, demo wallet, `docs/demo.md`, scripted rehearsal (`npm run rehearse`)
+- [ ] Trying real wallets on a public network (signet)
 
 ## Open questions
 
-- Which use case leads the demo: courier delivery, freelance work, or P2P trade?
+- ~~Which use case leads the demo?~~ Answered: courier delivery (the recipient is physically present at the handover).
 - ~~Who owns the seller's node?~~ Answered: the seller can connect their own (non-custodial); the shared hosted node is optional and labelled custodial.
 - Regtest only, or signet/testnet with real wallets?
 - Maximum supported hold time on the target network and node settings.
