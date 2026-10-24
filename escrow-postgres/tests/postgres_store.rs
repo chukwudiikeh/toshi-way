@@ -52,6 +52,7 @@ async fn connecting_again_does_not_re_run_migrations_or_lose_data() {
         .create(
             NewEscrow {
                 buyer_id: None,
+                arbiter: None,
                 seller_id: "seller".into(),
                 amount_sats: 1000,
                 description: "open offer".into(),
@@ -79,6 +80,7 @@ async fn only_one_of_two_concurrent_transitions_wins() {
         .create(
             NewEscrow {
                 buyer_id: Some("buyer".into()),
+        arbiter: None,
                 seller_id: "seller".into(),
                 amount_sats: 1000,
                 description: "race".into(),
@@ -117,6 +119,7 @@ async fn a_duplicate_payment_hash_is_a_conflict() {
     let svc = EscrowService::new(MockLightning::new(), store, TimingConfig::default());
     let offer = || NewEscrow {
         buyer_id: Some("buyer".into()),
+        arbiter: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "dup".into(),
