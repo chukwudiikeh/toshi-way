@@ -592,13 +592,21 @@ async fn the_arbiter_can_release_a_disputed_escrow_to_the_seller() {
     let wrong = f.svc.arbitrate(&e.id, "judge", Decision::Release(secret(9)), "", T0 + 20).await;
     assert!(matches!(wrong, Err(ServiceError::WrongPreimage)));
     assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Disputed);
+    let recorded = f.svc.audit_log(&e.id).await.unwrap().iter().filter(|a| a.action == "arbiter_decision").count();
+    assert_eq!(recorded, 0, "a rejected attempt leaves no decision on the record");
 
     let done = f.svc.arbitrate(&e.id, "judge", Decision::Release(p), "delivery photo is genuine", T0 + 30).await.unwrap();
     assert_eq!(done.state, EscrowState::Settled);
     assert_eq!(f.node.state(&secret(1).hash()), Some(NodeInvoiceState::Settled));
-    let last = f.svc.audit_log(&e.id).await.unwrap().pop().unwrap();
-    assert_eq!(last.actor, "judge");
-    assert!(last.reason.contains("release to the seller") && last.reason.contains("delivery photo is genuine"), "{}", last.reason);
+    let decisions: Vec<_> =
+        f.svc.audit_log(&e.id).await.unwrap().into_iter().filter(|a| a.action == "arbiter_decision").collect();
+    assert_eq!(decisions.len(), 1, "the decision is on record exactly once");
+    assert_eq!(decisions[0].actor, "judge");
+    assert!(
+        decisions[0].reason.contains("release to the seller") && decisions[0].reason.contains("delivery photo is genuine"),
+        "{}",
+        decisions[0].reason
+    );
 
     // Deciding the same thing again does nothing more; deciding the opposite is refused.
     assert!(f.svc.arbitrate(&e.id, "judge", Decision::Release(secret(1)), "", T0 + 40).await.is_ok());

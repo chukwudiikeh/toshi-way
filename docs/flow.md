@@ -395,6 +395,36 @@ Lifts the "custody" non-goal's loose end: until now every seller shared one LND 
 
 ---
 
+## 18. Arbitration
+
+An optional trusted third party who decides disputes, so the buyer no longer holds all the power (before this, a buyer could keep the goods and simply never reveal `P`).
+
+**The problem.** Refunding is easy: cancel the hold. Releasing needs `P`, which only the buyer's browser has. So the arbiter has to be able to obtain `P` without the server ever seeing it.
+
+**The design.** When the buyer accepts an arbitrated escrow, their browser encrypts `P` to the arbiter's public key (ECIES from WebCrypto: ephemeral ECDH P-256, HKDF-SHA-256, AES-256-GCM with the recipient's key as additional data) and sends the 125-byte blob next to `H`. The server stores it, never returns it in any escrow view or in the history, and only serves it to the arbiter. The arbiter's browser opens it with a private key that never leaves their device.
+
+Alternatives considered: a second hash path (Lightning has one hash lock, so no), the server holding `P` (custodial, and it could settle by itself), or Shamir shares (more moving parts for the same trust).
+
+**Decisions worth recording.**
+- *Junk blob problem.* The server cannot tell a valid blob from garbage, and a buyer could upload junk to defeat the seller's protection. So the arbiter must open the blob, check `sha256` against the payment hash and **confirm** before the seller relies on it; the seller's page warns until then. The confirmation is the arbiter's word, which the server records.
+- *Key swap.* The arbiter's key is copied onto the escrow when it is created and shown with a fingerprint to buyer, seller and arbiter, so a later key change cannot redirect the buyer's encryption, and a swapped key would make the arbiter's confirmation fail.
+- *Authority.* Only the named arbiter can decide, only while `DISPUTED`, only before the deadline. They cannot release, cancel, dispute or accept through the ordinary endpoints. The operator can no longer cancel a disputed arbitrated escrow, so nobody can overrule the arbiter; escrows without an arbiter are unchanged.
+- *The record.* My first end-to-end run showed the history crediting the settlement to "the node": the node's own invoice event wins the race to record the state change, so the arbiter's name and note were lost. The decision is now written to the audit log before the node is touched. A second bug the tests then caught: a rejected attempt (wrong secret) was also being recorded as a decision, so the secret is validated before anything is written.
+
+**Persistence.** Escrows gain `arbiter_id`, `arbiter_key`, `arbiter_sealed`, `arbiter_confirmed_at`; a new `arbiter_keys` table. SQLite migration 004, PostgreSQL migration 003. The "no place to keep a preimage" test was rewritten to inspect real column names instead of searching migration text for the word "secret" (a comment tripped it); the only column that mentions a secret is the encrypted `arbiter_sealed`.
+
+**Verified.**
+- Rust: 6 new flow tests and 10 HTTP tests (key registration and its validation, who can be named, key fixed at creation, sealed secret required and never leaked, access control for each endpoint, confirmation, release, refund, wrong or short secrets, deadline, the arbiter's lack of other powers, the operator unable to overrule). 106 workspace tests pass; SQLite and PostgreSQL pass the extended store contract; the real-node and Postgres suites still pass.
+- Web: 8 crypto tests (round trip, wrong key, tampering in each part, wrong sizes, fingerprint format, SPKI shape) and schema tests; 84 unit tests in all.
+- Browser, with real Lightning: a real arbiter creates a key, the buyer's secret is sealed, the arbiter verifies and confirms, the seller disputes, the arbiter releases and the seller is settled; separately the buyer disputes and the arbiter refunds. The test asserts the buyer's browser never sent `P`, the seller's never had it, and the arbiter's sent it exactly once, in the decision. The server accepted the keys the browser made, so the two implementations agree on the key format. A wrong device (no private key) and a stranger are turned away.
+- The live database upgraded from schema 3 to 4 on startup with its data. No 64-hex string is in either log, and no stored blob contains a plaintext secret.
+
+**Test infrastructure note.** The Playwright suite opened a new browser profile per party and never closed any; around the tenth test a tab crashed ("Target crashed") in a form fill. Not an app bug. Each test now closes its profiles when it ends. All 10 pass.
+
+**Not done.** Arbiters are not paid, rated or discoverable; sellers must already know the arbiter's user id. No multi-arbiter or timeout-to-arbiter escalation. A lost arbiter key cannot be recovered (the blob can then only be refunded at the deadline). Hosted mode (Mode B), milestones and fiat display remain.
+
+---
+
 ## Next
 
 Pick the lead demo use case and rehearse. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

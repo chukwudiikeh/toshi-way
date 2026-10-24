@@ -55,10 +55,17 @@ async function newParty(browser: Browser): Promise<Party> {
   return { context, page, id, requests };
 }
 
-async function createEscrow(seller: Party, buyerId: string, description: string, hold: [string, "minutes" | "hours"]) {
+async function createEscrow(
+  seller: Party,
+  buyerId: string,
+  description: string,
+  hold: [string, "minutes" | "hours"],
+  arbiterId?: string,
+) {
   const { page } = seller;
   await page.goto("/escrows/new");
   await page.getByLabel("Buyer's user id").fill(buyerId);
+  if (arbiterId) await page.getByLabel("Arbiter's user id").fill(arbiterId);
   await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByLabel("Description").fill(description);
   await page.getByLabel("Hold time").fill(hold[0]);
@@ -80,6 +87,12 @@ async function acceptAndPay(buyer: Party, seller: Party, id: string) {
 }
 
 test.beforeAll(freshChainTip);
+
+// Each test opens several browser profiles. Close them when it ends, or they pile up across the
+// suite until the browser runs out of memory and a tab crashes.
+test.afterEach(async ({ browser }) => {
+  await Promise.all(browser.contexts().map((c) => c.close().catch(() => {})));
+});
 
 test("happy path: lock, hand over the release QR link, settle", async ({ browser }) => {
   const seller = await newParty(browser);
@@ -320,4 +333,109 @@ test("a seller connects their own node and is paid on it", async ({ browser }) =
   // While an escrow is in flight the node is locked in; once it is over it can be changed.
   await page.goto("/node");
   await expect(page.getByRole("button", { name: "Disconnect" })).toBeVisible();
+});
+
+
+/** A party who has made an arbiter key in their browser. */
+async function newArbiter(browser: Browser): Promise<Party & { fingerprint: string }> {
+  const arbiter = await newParty(browser);
+  await arbiter.page.goto("/arbiter");
+  await arbiter.page.getByRole("button", { name: "Create key" }).click();
+  await expect(arbiter.page.getByText("Your arbiter key is ready.")).toBeVisible();
+  const fingerprint = (await arbiter.page.getByText(/^([0-9a-f]{4} ){15}[0-9a-f]{4}$/).first().textContent())!.trim();
+  return Object.assign(arbiter, { fingerprint });
+}
+
+/** Everyone's view of an arbitrated escrow that has been paid, locked and confirmed by the arbiter. */
+async function arbitratedLocked(browser: Browser, description: string) {
+  const arbiter = await newArbiter(browser);
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+  const id = await createEscrow(seller, buyer.id, description, ["30", "minutes"], arbiter.id);
+  // Both sides can see who the arbiter is and the key to check with them.
+  await expect(seller.page.getByText("This escrow has an arbiter")).toBeVisible();
+  await expect(seller.page.getByText(arbiter.fingerprint).first()).toBeVisible();
+
+  await acceptAndPay(buyer, seller, id);
+  await expect(seller.page.getByText("The arbiter hasn't confirmed yet.")).toBeVisible();
+
+  // The arbiter opens the buyer's sealed secret in their own browser and confirms.
+  await arbiter.page.goto(`/escrows/${id}`);
+  await arbiter.page.getByRole("button", { name: "Check the sealed secret" }).click();
+  await expect(arbiter.page.getByText("The sealed secret opens and matches the payment hash.")).toBeVisible();
+  await arbiter.page.getByRole("button", { name: "Confirm to both parties" }).click();
+  await expect(arbiter.page.getByText("You confirmed this.")).toBeVisible();
+  await expect(seller.page.getByText("The arbiter hasn't confirmed yet.")).toHaveCount(0);
+  await expect(seller.page.getByText("confirmed", { exact: true })).toBeVisible();
+  return { arbiter, seller, buyer, id };
+}
+
+async function openDispute(party: Party, reason: string) {
+  await party.page.getByRole("button", { name: "Open a dispute…" }).click();
+  await party.page.getByLabel("What went wrong?").fill(reason);
+  await party.page.getByRole("button", { name: "Open dispute", exact: true }).click();
+}
+
+test("arbitration: the arbiter releases a disputed escrow to the seller, and the secret reaches only them", async ({ browser }) => {
+  const { arbiter, seller, buyer, id } = await arbitratedLocked(browser, "e2e arbiter release");
+  const secret = (await buyer.page.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id))!;
+  expect(secret).toMatch(/^[0-9a-f]{64}$/);
+
+  // The buyer has the goods but will not release; the seller disputes.
+  await openDispute(seller, "The buyer has the parcel and will not release.");
+  for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Disputed")).toBeVisible();
+
+  // The operator can no longer cancel it over the arbiter's head; the buyer and seller cannot decide.
+  await expect(arbiter.page.getByText("A dispute is waiting for your decision.")).toBeVisible();
+  await expect(seller.page.getByRole("button", { name: "Release to the seller" })).toHaveCount(0);
+
+  await arbiter.page.getByLabel("Your note").fill("Delivery photo is genuine.");
+  await arbiter.page.getByRole("button", { name: "Release to the seller" }).click();
+  await arbiter.page.getByRole("button", { name: "Yes, pay the seller" }).click();
+  for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Settled")).toBeVisible();
+  await expect(seller.page.getByText("Delivery photo is genuine.")).toBeVisible();
+
+  // The buyer never sent the secret in the clear: only a sealed blob. The seller never saw it. The
+  // arbiter sent it once, in the decision.
+  const carrying = (p: Party) => p.requests.filter((r) => r.url.includes(secret) || r.body?.includes(secret));
+  expect(carrying(buyer)).toHaveLength(0);
+  expect(carrying(seller)).toHaveLength(0);
+  expect(carrying(arbiter)).toHaveLength(1);
+  expect(carrying(arbiter)[0].url).toMatch(/\/arbitration\/decide$/);
+  const accept = buyer.requests.find((r) => r.url.endsWith(`/escrows/${id}/accept`))!;
+  expect(JSON.parse(accept.body!).sealed_secret).toMatch(/^[A-Za-z0-9+/=]{160,}$/);
+});
+
+test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({ browser }) => {
+  const { arbiter, seller, buyer } = await arbitratedLocked(browser, "e2e arbiter refund");
+  await openDispute(buyer, "Nothing arrived.");
+  for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Disputed")).toBeVisible();
+
+  await arbiter.page.getByLabel("Your note").fill("No proof of delivery.");
+  await arbiter.page.getByRole("button", { name: "Refund the buyer" }).click();
+  await arbiter.page.getByRole("button", { name: "Yes, refund the buyer" }).click();
+  for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Refunded")).toBeVisible();
+  await expect(buyer.page.getByText("No proof of delivery.")).toBeVisible();
+});
+
+test("arbitration: an arbiter without their private key on this device cannot decide, and a stranger is turned away", async ({ browser }) => {
+  const { arbiter, id } = await arbitratedLocked(browser, "e2e arbiter wrong device");
+
+  // The same account on a browser that does not hold the private key.
+  const token = JSON.parse((await arbiter.page.evaluate(() => localStorage.getItem("toshi.session")))!).token;
+  const elsewhere = await browser.newContext();
+  const page = await elsewhere.newPage();
+  await page.goto("/");
+  await page.getByLabel("Token").fill(token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
+  await page.goto(`/escrows/${id}`);
+  // Already confirmed, so there is nothing to check; the point is that no private key is needed to look.
+  await expect(page.getByText("You confirmed this.")).toBeVisible();
+  await page.goto("/arbiter");
+  await expect(page.getByText("This browser does not have the private key for this fingerprint")).toBeVisible();
+
+  const stranger = await newParty(browser);
+  await stranger.page.goto(`/escrows/${id}`);
+  await expect(stranger.page.getByText("Escrow not found")).toBeVisible();
 });

@@ -132,3 +132,30 @@ describe("seller node", () => {
     expect(Escrow.parse({ ...sample, seller_node: "own" }).seller_node).toBe("own");
   });
 });
+
+describe("arbitration", () => {
+  it("defaults to no arbiter on an escrow that has none", () => {
+    const e = Escrow.parse(sample);
+    expect([e.arbiter_id, e.arbiter_key, e.arbiter_sealed, e.arbiter_confirmed_at]).toEqual([null, null, false, null]);
+  });
+
+  it("reads an arbitrated escrow and the arbiter role", () => {
+    const e = Escrow.parse({
+      ...sample,
+      your_role: "arbiter",
+      arbiter_id: "u_judge",
+      arbiter_key: "a2V5",
+      arbiter_fingerprint: "ab12 cd34",
+      arbiter_sealed: true,
+      arbiter_confirmed_at: 1792666000,
+    });
+    expect(e).toMatchObject({ your_role: "arbiter", arbiter_id: "u_judge", arbiter_sealed: true });
+  });
+
+  it("passes the arbiter id through a form and leaves it out when blank", () => {
+    const form = { buyer_id: "", arbiter_id: " u_judge ", amount_sats: "1000", description: "parcel", hold_amount: "2", hold_unit: "hours" };
+    expect(NewEscrowForm.parse(form)).toMatchObject({ arbiter_id: "u_judge" });
+    const blank = NewEscrowForm.parse({ ...form, arbiter_id: "  " });
+    expect("arbiter_id" in blank).toBe(false);
+  });
+});

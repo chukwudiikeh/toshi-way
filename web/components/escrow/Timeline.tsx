@@ -27,12 +27,23 @@ type Row = { at: number; title: string; detail?: string; source: "app" | "node" 
 export function Timeline({ events, escrow }: { events: EscrowEvents | null; escrow: Escrow }) {
   if (!events) return null;
   const who = (actor: string) =>
-    actor === escrow.buyer_id ? "the buyer" : actor === escrow.seller_id ? "the seller" : actor;
+    actor === escrow.buyer_id
+      ? "the buyer"
+      : actor === escrow.seller_id
+        ? "the seller"
+        : actor === escrow.arbiter_id
+          ? "the arbiter"
+          : actor;
   const rows: Row[] = [
     { at: escrow.created_at, title: "Offer created by the seller", source: "app" as const },
     ...events.audit.map((a) => ({
       at: a.at,
-      title: (a.to_state && toStateText[a.to_state]) || `${a.from_state ?? "?"} → ${a.to_state ?? "?"}`,
+      title:
+        a.action === "arbiter_confirm"
+          ? "Arbiter confirmed they can release this escrow"
+          : a.action === "arbiter_decision"
+            ? "Arbiter decided"
+            : (a.to_state && toStateText[a.to_state]) || `${a.from_state ?? "?"} → ${a.to_state ?? "?"}`,
       detail: [a.actor && `by ${who(a.actor)}`, a.reason].filter(Boolean).join(" · "),
       source: "app" as const,
     })),

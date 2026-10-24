@@ -9,6 +9,8 @@ import {
   EscrowList,
   Health,
   Invoice,
+  ArbiterKey,
+  Arbitration,
   Me,
   NodeInfo,
   NewUser,
@@ -112,8 +114,26 @@ export const api = {
 
   get: (id: string) => request("GET", esc(id), Escrow),
 
-  accept: (id: string, paymentHash: string) =>
-    request("POST", `${esc(id)}/accept`, Escrow, { body: { payment_hash: paymentHash } }),
+  /** `sealedSecret`: the release secret encrypted to the arbiter, required when the escrow has one. */
+  accept: (id: string, paymentHash: string, sealedSecret?: string) =>
+    request("POST", `${esc(id)}/accept`, Escrow, {
+      body: sealedSecret ? { payment_hash: paymentHash, sealed_secret: sealedSecret } : { payment_hash: paymentHash },
+    }),
+
+  arbiterKey: () => request("GET", "/api/v1/me/arbiter-key", ArbiterKey),
+
+  setArbiterKey: (publicKey: string) =>
+    request("PUT", "/api/v1/me/arbiter-key", ArbiterKey, { body: { public_key: publicKey } }),
+
+  arbitration: (id: string) => request("GET", `${esc(id)}/arbitration`, Arbitration),
+
+  confirmArbiter: (id: string) => request("POST", `${esc(id)}/arbitration/confirm`, Escrow),
+
+  /** `preimage` is needed to release; a refund needs none. */
+  decide: (id: string, decision: "release" | "refund", note: string, preimage?: string) =>
+    request("POST", `${esc(id)}/arbitration/decide`, Escrow, {
+      body: { decision, note, ...(preimage ? { preimage } : {}) },
+    }),
 
   invoice: (id: string) => request("GET", `${esc(id)}/invoice`, Invoice),
 
@@ -134,6 +154,15 @@ export const api = {
 export function describeError(err: unknown): string {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
   switch (err.code) {
+    case "arbiter_has_no_key":
+      return "That user hasn't set up a key to act as an arbiter yet. Ask them to open the Arbiter page first.";
+    case "unknown_arbiter":
+      return "No user has that id, so they can't be the arbiter.";
+    case "invalid_arbiter":
+      return "The arbiter has to be someone other than the buyer and the seller.";
+    case "invalid_key":
+    case "invalid_decision":
+      return err.message;
     case "no_node":
       return "Connect your own Lightning node before creating an escrow.";
     case "node_in_use":
