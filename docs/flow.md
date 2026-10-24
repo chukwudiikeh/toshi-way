@@ -425,6 +425,34 @@ Alternatives considered: a second hash path (Lightning has one hash lock, so no)
 
 ---
 
+## 19. Demo preparation
+
+The features were well ahead of the readiness work, so this step is about being able to show the product reliably.
+
+**Decision: the lead use case is a courier delivery.** The recipient has to be physically present at the handover, which is exactly the moment the secret is shown; that answers "the buyer could just never release", and the arbiter scene covers what remains.
+
+**What was built.**
+- `scripts/demo-env.sh up|refresh|status|down|reset`: one command starts the Lightning network, server, demo wallet and web app, fixes the two environment problems we kept hitting (a stale chain making LND report "not synced", and the container-bridge firewall setting), and seeds the cast. From a clean state it takes about 25 seconds and is safe to repeat. State lives in `.demo/` (gitignored).
+- `scripts/seed-demo.mjs`: a courier (seller) already connected to their own node `seller2`, a customer (buyer), and an arbiter whose key is generated, registered and saved as a backup the Arbiter page can restore. Reuses accounts while their tokens still work.
+- `scripts/demo-wallet.mjs` and `web/components/DemoWallet.tsx`: a stand-in WebLN wallet so the presenter clicks "Pay with my wallet" instead of typing `lncli`. It listens on localhost only, accepts only `lnbcrt` invoices, never builds a shell command from input, and labels itself "Demo wallet · regtest" on screen. The web side does nothing unless `NEXT_PUBLIC_DEMO_WALLET_URL` is set.
+- `docs/demo.md`: pitch, setup checklist, three scenes with talk track, honest limits, likely questions, and a troubleshooting table. Plus a top-level `README.md`, which the repo did not have.
+- `web/e2e-demo/rehearsal.spec.ts` (`npm run rehearse`): plays the script exactly with the seeded cast, signing in by token, paying with the demo wallet, handing over by release link, and waiting out the 62-second refund. Takes about two minutes and screenshots each step at desktop and phone width.
+
+**What the rehearsal found (and fixed).**
+- The Next.js **"N" dev indicator** showed in every screenshot: turned off (`devIndicators: false`; errors still surface).
+- On the arbiter's decision, **"Refund the buyer" was bright red** and "Release" plain, nudging the choice: both are now equal weight.
+- The arbiter had to scroll to the history to find the dispute reason: it is now quoted at the decision ("What was reported").
+- The seller saw a green **"you can start the work"** above an amber **"the arbiter hasn't confirmed, consider waiting"**: the green message now just says the funds are locked until the arbiter confirms.
+- The demo wallet's on-screen label **never appeared**. React runs effects twice in development: the first run installed the wallet, the second saw it already there and returned before switching the label on. An assertion added to the rehearsal caught it.
+- **A flaky browser suite had a real cause.** Failures landed on account creation: the server allows 10 sign-ups a minute per address, and the suite (and, in a real room, an audience behind one network address) exceeds that. The limits are now configurable (`RATE_LIMIT_PER_MIN`, `REGISTER_LIMIT_PER_MIN`), the demo environment raises the sign-up limit, and the one other failure (a note appearing twice in the history, so a selector was ambiguous) was fixed in the test.
+- `demo-env.sh` itself: a first version hung when its output was piped, because `a && b &` backgrounds a whole subshell that keeps the pipe open. Each service now gets its own redirected, `exec`'d process. `down` also stops services whose pid file was lost.
+
+**Verified.** From `reset` then `up` the rehearsal passes with a brand-new cast, and the 10-test browser suite passed twice in a row against the same environment; 84 web unit tests, lint and build are clean.
+
+**Not done.** Still regtest with a stand-in wallet: nothing here proves real phone wallets hold a payment pending for hours. Releasing from a real phone over a LAN needs HTTPS for the in-app camera (the phone's own camera app opening the link works without it).
+
+---
+
 ## Next
 
-Pick the lead demo use case and rehearse. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
+Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
