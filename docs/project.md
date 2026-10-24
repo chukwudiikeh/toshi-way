@@ -58,7 +58,7 @@ States: `CREATED`, `INVOICE_ISSUED`, `LOCKED`, `SETTLED`, `REFUNDED`, `EXPIRED_U
 ## Architecture
 
 - **Backend:** Rust, Axum, Tokio.
-- **Node:** LND over gRPC (invoices and router services), behind a `LightningAdapter` trait so core logic is testable with a mock.
+- **Node:** LND over gRPC (invoices and router services), behind a `LightningAdapter` trait so core logic is testable with a mock. A `NodeDirectory` picks the node for each seller: their own, or (if the operator allows it) the service's shared node.
 - **Database:** SQLx behind the `Store` trait (escrows, node events, audit log, users): SQLite by default (`escrow-sqlite`) or PostgreSQL (`escrow-postgres`, selected by `DATABASE_URL`). Both have versioned migrations and pass the same store contract tests.
 - **Frontend:** Next.js, TypeScript, Tailwind, Zod.
 - **Modules:** web client, API layer, escrow core (state machine, idempotency), Lightning adapter, persistence, deadline scheduler.
@@ -70,6 +70,15 @@ Constraints: all node calls have timeouts; invoice subscriptions reconnect and r
 Timeouts are the hardest part. The service enforces its own settle-by time well before real HTLC expiry (and before LND's hold-expiry margin), unpaid invoices expire in minutes, final CLTV delta is set deliberately, and creation rejects deadlines beyond a configured maximum hold. Exact values must be tested on regtest and recorded here.
 
 Measured on regtest: LND auto-cancels a held HTLC 12 blocks before it expires (`invoices.holdexpirydelta`), and the payer adds about 3 blocks to the invoice's final CLTV delta. Usable hold window is therefore about `final_cltv_delta + 3 - 12` blocks, roughly 71 blocks (about 12 hours) with the default delta of 80. The service's settle-by must be earlier than `expiry_height - 12`.
+
+## Whose node, and who holds the money
+
+Each escrow records which node holds its invoice (`seller_node` in the API):
+
+- **`own`** (non-custodial). The seller connected their own LND node. The hold invoice is created on it, so a release pays the seller directly and the service never holds the sats. Sellers supply the node's gRPC address, its TLS certificate and an invoice-only macaroon (`invoices:read invoices:write info:read`). Saving runs a check (connect, synced, create and cancel a probe invoice) and stores nothing if it fails. The macaroon is encrypted at rest (AES-256-GCM under `NODE_CREDENTIAL_KEY`), the connection is pinned to the supplied certificate, and the address must be public (no loopback, private, link-local or metadata addresses) unless `ALLOW_PRIVATE_NODE_ADDRESSES=1` for regtest.
+- **`shared`** (custodial after release). The service's own node, used for sellers who have none when `SHARED_NODE` is on (the default). The operator receives the sats and owes them to the seller. The UI says so. Set `SHARED_NODE=off` so every seller must bring their own and the service can never receive anyone's money.
+
+The kind is fixed when the escrow is created, so changing node settings cannot strand an invoice. A seller cannot change or remove their node while an escrow with an invoice is in flight on it.
 
 ## Trust model
 
@@ -88,6 +97,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 | POST | `/api/v1/escrows/:id/dispute` | Flag a dispute |
 | GET | `/api/v1/escrows/:id/events` | Audit and event history |
 | GET | `/api/v1/me` | The caller's `{id, role}` |
+| GET / PUT / DELETE | `/api/v1/me/node` | Read, connect (address, TLS cert, invoice macaroon) or remove the seller's own Lightning node |
 | GET | `/health` | Health, including node connectivity and `server_time` |
 
 ## Milestones
@@ -111,13 +121,14 @@ Defined in `regtest/`, run with Docker Compose (no Polar needed).
 ./regtest/setup.sh
 ```
 
-This starts `bitcoind` plus three LND v0.18.5 nodes, funds them, and opens channels `buyer → router → seller`. It is safe to re-run. Credentials are exported to `regtest/creds/<node>/` (`tls.cert`, `admin.macaroon`), which is gitignored.
+This starts `bitcoind` plus four LND v0.18.5 nodes, funds them, and opens channels `buyer → router → seller` and `router → seller2` (`seller2` plays a second seller with their own node). It is safe to re-run. Credentials are exported to `regtest/creds/<node>/` (`tls.cert`, `admin.macaroon`), which is gitignored.
 
 | Node | gRPC | REST |
 |------|------|------|
 | buyer | `localhost:10001` | `localhost:8081` |
 | router | `localhost:10002` | `localhost:8082` |
 | seller | `localhost:10003` | `localhost:8083` |
+| seller2 | `localhost:10004` | `localhost:8084` |
 
 Useful commands:
 
@@ -145,12 +156,13 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Hardening 2: restricted invoice-only macaroon (`regtest/creds/seller/toshi.macaroon`, now the server default), restart test on the real node
 - [x] Hardening 3: SQLite schema migrations (`PRAGMA user_version`), open-offer links (no buyer id needed; the first user to accept becomes the buyer)
 - [x] Extras: WebLN one-click payment, camera scan of the release QR, PostgreSQL store (`DATABASE_URL`)
+- [x] Sellers bring their own node (non-goal lifted): per-seller node directory, encrypted credentials, `/api/v1/me/node`, "My node" page, second regtest seller node
 - [ ] Demo rehearsal and choosing the lead use case
 
 ## Open questions
 
 - Which use case leads the demo: courier delivery, freelance work, or P2P trade?
-- Who owns the seller's node: the seller, or the service (hosted)?
+- ~~Who owns the seller's node?~~ Answered: the seller can connect their own (non-custodial); the shared hosted node is optional and labelled custodial.
 - Regtest only, or signet/testnet with real wallets?
 - Maximum supported hold time on the target network and node settings.
 
@@ -167,6 +179,8 @@ DATABASE_URL=postgres://toshi:toshi@127.0.0.1:55432/toshi cargo run -p escrow-ap
 cargo run -p phase1 -- both                               # the original hold-invoice demo
 
 export OPERATOR_TOKEN=$(openssl rand -hex 16)             # 24+ characters
+export NODE_CREDENTIAL_KEY=$(openssl rand -hex 32)        # keep it: it decrypts sellers' stored macaroons
+export ALLOW_PRIVATE_NODE_ADDRESSES=1                     # regtest only: lets sellers point at localhost nodes
 cargo run -p escrow-api --bin toshi-server &              # API on 127.0.0.1:3000, SQLite in ./toshi.db
 ./scripts/demo.sh                                         # both demo paths over HTTP
 ```
