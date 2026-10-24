@@ -42,7 +42,8 @@ impl fmt::Debug for Preimage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Escrow {
     pub id: String,
-    pub buyer_id: String,
+    /// `None` for an open offer that nobody has accepted yet; accepting it sets the buyer.
+    pub buyer_id: Option<String>,
     pub seller_id: String,
     pub amount_sats: u64,
     pub description: String,

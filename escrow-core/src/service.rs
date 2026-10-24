@@ -47,7 +47,8 @@ impl From<StoreError> for ServiceError {
 
 #[derive(Debug, Clone)]
 pub struct NewEscrow {
-    pub buyer_id: String,
+    /// `None` creates an open offer: the first user to accept becomes the buyer.
+    pub buyer_id: Option<String>,
     pub seller_id: String,
     pub amount_sats: u64,
     pub description: String,
@@ -129,7 +130,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         if new.amount_sats == 0 {
             return Err(ServiceError::Invalid("amount must be greater than zero".into()));
         }
-        if new.buyer_id == new.seller_id {
+        if new.buyer_id.as_deref() == Some(new.seller_id.as_str()) {
             return Err(ServiceError::Invalid("buyer and seller must differ".into()));
         }
         self.timing.validate_deadline(now, new.deadline_at)?;
@@ -152,7 +153,8 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
     }
 
     /// The buyer accepts and supplies `H`; the seller's node issues the hold invoice.
-    /// Repeating the call with the same hash returns the same escrow.
+    /// Repeating the call with the same hash returns the same escrow. On an open offer (no buyer
+    /// yet) the accepting user becomes the buyer; if two race, the state compare-and-set picks one.
     pub async fn accept(
         &self,
         id: &str,
@@ -161,6 +163,15 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         now: i64,
     ) -> Result<Escrow, ServiceError> {
         let e = self.get(id).await?;
+        match e.buyer_id.as_deref() {
+            Some(buyer) if buyer != actor => {
+                return Err(ServiceError::Invalid("only the buyer can accept".into()));
+            }
+            None if actor == e.seller_id => {
+                return Err(ServiceError::Invalid("the seller cannot be the buyer".into()));
+            }
+            _ => {}
+        }
         match e.state {
             EscrowState::InvoiceIssued if e.payment_hash == Some(hash) => return Ok(e),
             EscrowState::Created => {}
@@ -185,6 +196,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
             })
             .await?;
         let update = EscrowUpdate {
+            buyer_id: e.buyer_id.is_none().then(|| actor.to_string()),
             payment_hash: Some(hash),
             invoice: Some(invoice),
             invoice_expires_at: Some(now + expiry_secs),

@@ -72,7 +72,8 @@ function MyEscrows({ session }: { session: Session }) {
         setEscrows(escrows);
         setError(null);
         const mine = escrows.find((e) => e.your_role !== "operator");
-        if (mine) rememberUserId(mine.your_role === "buyer" ? mine.buyer_id : mine.seller_id);
+        const myId = mine && (mine.your_role === "buyer" ? mine.buyer_id : mine.seller_id);
+        if (myId) rememberUserId(myId);
       } catch (err) {
         if (alive) setError(describeError(err));
       }

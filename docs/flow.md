@@ -339,6 +339,21 @@ Environment note: this Codespace had no Rust or `protoc`; installed with rustup 
 
 ---
 
+## 15. Phase 5, step 3: migrations and open-offer links
+
+The seller no longer needs the buyer's user id: leave it empty and the escrow page is a link anyone can open.
+
+- **Migrations** (`escrow-sqlite`). The schema is now an ordered list of SQL files (`src/migrations/001_initial.sql`, `002_open_offers.sql`); SQLite's `user_version` records how many have run. Each runs in its own transaction with foreign keys off (SQLite needs that to rebuild a table others reference) and a `foreign_key_check` before it commits. A database newer than the build is refused. `001` is the old `schema.sql`, so databases created before migrations existed (version 0, tables present) are adopted and upgraded in place. A test builds exactly such a database with an escrow and an audit row in it, opens it, and checks the data survived, `buyer_id` may now be empty, and the version is 2. The live demo database from earlier in this session was upgraded the same way when the new server opened it. Rule from now on: never edit a shipped migration, add a new one.
+- **Model.** `Escrow.buyer_id` is `Option<String>`. `accept` on an open offer sets the buyer to the accepting user in the same compare-and-set transition that issues the invoice, so two people racing cannot both win; the loser gets `invalid_state`. (As before, the loser may have created an unused hold invoice on the node first; it expires on its own.) A named buyer cannot be replaced by someone else accepting, and the seller cannot accept their own offer.
+- **API.** `buyer_id` is optional on create (blank counts as omitted; an unknown id is still rejected). Anyone signed in who has the link can read an open offer that is still `CREATED` and sees `your_role: "buyer"`; they cannot decline it (403), it is not in their list, and once someone has accepted it everyone else gets 404 again.
+- **Web.** The form's buyer field is optional with an explanation. A visitor with no account who follows an offer link can create one right on that page (the token is shown once, as on the home page) and goes straight back to the offer. The seller's page warns that the first person to accept becomes the buyer. Tests: 6 Rust tests (core flows, API, store contract, migration) and 2 Vitest tests; the Playwright suite now has five tests, including a new-visitor open-offer run, and all pass.
+
+Trade-off worth knowing: an open offer's link is a bearer capability. Whoever opens it first and accepts is the buyer, so it should be sent only to the person you are dealing with. Naming the buyer is still available.
+
+Not done from the optional list: WebLN one-click payment, an in-app QR scanner, and a Postgres store.
+
+---
+
 ## Next
 
-Pick the lead demo use case and rehearse. Optional: WebLN one-click payment, an in-app QR scanner.
+Pick the lead demo use case and rehearse. Optional (WebLN and a Postgres store remain; open-offer links and migrations are done): WebLN one-click payment, an in-app QR scanner.

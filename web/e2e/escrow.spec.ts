@@ -173,3 +173,37 @@ test("signing in with a token finds the account's id and role", async ({ browser
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
   await expect(page.getByText(user.id)).toBeVisible();
 });
+
+test("open offer: a link anyone can open; a brand-new visitor becomes the buyer", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const { page } = seller;
+
+  await page.goto("/escrows/new");
+  await page.getByLabel("Amount (sats)").fill("1000");
+  await page.getByLabel("Description").fill("e2e open offer");
+  await page.getByLabel("Hold time").fill("30");
+  await page.locator("select").selectOption("minutes");
+  await page.getByRole("button", { name: "Create escrow" }).click(); // no buyer id
+  await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
+  const id = page.url().split("/").pop()!;
+  await expect(page.getByText("the first person to open the link and accept becomes the buyer")).toBeVisible();
+
+  // A visitor with no account follows the link, creates one on the spot, and lands on the offer.
+  const context = await browser.newContext();
+  const visitor = await context.newPage();
+  await visitor.goto(`/escrows/${id}`);
+  await visitor.getByRole("button", { name: "Create account" }).click();
+  await visitor.getByLabel("I have saved my token somewhere safe").check();
+  await visitor.getByRole("button", { name: "Continue" }).click();
+  await expect(visitor.getByText("e2e open offer")).toBeVisible();
+  await expect(visitor.getByRole("button", { name: "Decline" })).toHaveCount(0);
+
+  await visitor.getByRole("button", { name: /Accept offer/ }).click();
+  await expect(visitor.getByRole("button", { name: "Copy invoice" })).toBeVisible();
+  await expect(stateBadge(page, "Awaiting payment")).toBeVisible();
+
+  // Now it belongs to the visitor: a third person gets "not found".
+  const stranger = await newParty(browser);
+  await stranger.page.goto(`/escrows/${id}`);
+  await expect(stranger.page.getByText("Escrow not found")).toBeVisible();
+});

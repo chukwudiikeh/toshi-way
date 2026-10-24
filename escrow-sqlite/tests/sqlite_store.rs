@@ -43,7 +43,7 @@ async fn full_flow_survives_a_restart_on_a_real_database_file() {
         let e = svc
             .create(
                 NewEscrow {
-                    buyer_id: "buyer".into(),
+                    buyer_id: Some("buyer".into()),
                     seller_id: "seller".into(),
                     amount_sats: 1000,
                     description: "parcel".into(),
@@ -82,7 +82,7 @@ async fn two_escrows_cannot_share_a_payment_hash_even_around_the_service() {
     let store = SqliteStore::in_memory().await.unwrap();
     let svc = EscrowService::new(MockLightning::new(), Arc::new(store), TimingConfig::default());
     let new = || NewEscrow {
-        buyer_id: "b".into(),
+        buyer_id: Some("b".into()),
         seller_id: "s".into(),
         amount_sats: 1,
         description: "x".into(),
@@ -99,7 +99,49 @@ async fn the_database_has_no_place_to_keep_a_preimage() {
     let path = temp_db("schema");
     let store = SqliteStore::open(&path).await.unwrap();
     drop(store);
-    let schema = include_str!("../src/schema.sql").to_lowercase();
+    let schema = [
+        include_str!("../src/migrations/001_initial.sql"),
+        include_str!("../src/migrations/002_open_offers.sql"),
+    ]
+    .join("\n")
+    .to_lowercase();
     assert!(!schema.contains("preimage"));
     assert!(!schema.contains("secret"));
+}
+
+/// A database created before migrations existed (schema applied, `user_version` 0, a real escrow
+/// with history in it) is upgraded in place: the data survives and open offers become possible.
+#[tokio::test]
+async fn an_old_database_is_migrated_without_losing_data() {
+    use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection};
+    let path = temp_db("migrate");
+    let mut conn = SqliteConnectOptions::new().filename(&path).create_if_missing(true).connect().await.unwrap();
+    sqlx::raw_sql(include_str!("../src/migrations/001_initial.sql")).execute(&mut conn).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO escrows VALUES ('old', 'b', 's', 1000, 'parcel', NULL, NULL, NULL, 'CREATED', 9000, 1, 1);
+         INSERT INTO audit_log (escrow_id, actor, action, from_state, to_state, reason, created_at)
+             VALUES ('old', 's', 'create', 'CREATED', 'CREATED', 'kept', 1);",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+
+    let store = SqliteStore::open(&path).await.unwrap();
+    let old = store.get("old").await.unwrap().expect("the escrow survived");
+    assert_eq!((old.buyer_id.as_deref(), old.seller_id.as_str(), old.amount_sats), (Some("b"), "s", 1000));
+    assert_eq!(store.audit_log("old").await.unwrap()[0].reason, "kept", "history survived");
+    let mut open = old.clone();
+    open.id = "open".into();
+    open.buyer_id = None;
+    store.insert(open).await.expect("buyer_id may now be empty");
+    drop(store);
+
+    // Opening again is a no-op, and the version is recorded.
+    let store = SqliteStore::open(&path).await.unwrap();
+    assert_eq!(store.get("open").await.unwrap().unwrap().buyer_id, None);
+    drop(store);
+    let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
+    assert_eq!(version, 2);
 }

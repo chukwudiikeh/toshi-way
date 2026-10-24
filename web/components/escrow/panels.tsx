@@ -178,15 +178,21 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
           <Button onClick={accept} busy={actions.busy === "accept"}>
             Accept offer of {formatSats(escrow.amount_sats)}
           </Button>
-          <ConfirmButton
-            confirmText="Decline this offer? Nothing has been paid."
-            confirmLabel="Yes, decline"
-            variant="danger"
-            busy={actions.busy === "cancel"}
-            onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
-          >
-            Decline
-          </ConfirmButton>
+          {escrow.buyer_id ? (
+            <ConfirmButton
+              confirmText="Decline this offer? Nothing has been paid."
+              confirmLabel="Yes, decline"
+              variant="danger"
+              busy={actions.busy === "cancel"}
+              onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
+            >
+              Decline
+            </ConfirmButton>
+          ) : (
+            <p className="text-xs text-neutral-500">
+              Accepting makes you the buyer of this offer. If you are not the person it was meant for, close this page.
+            </p>
+          )}
         </div>
       );
     case "INVOICE_ISSUED":
@@ -390,8 +396,17 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           <div className="text-sm font-medium">Link for the buyer</div>
           <CopyField value={`${appUrl()}/escrows/${escrow.id}`} label="Copy link" />
           <p className="text-xs text-neutral-500">
-            The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it. The offer
-            lapses on its own if the buyer hasn&apos;t accepted by the deadline.
+            {escrow.buyer_id ? (
+              <>
+                The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it.
+              </>
+            ) : (
+              <>
+                This is an open offer: <strong>the first person to open the link and accept becomes the buyer</strong>,
+                so send it only to the person you are dealing with.
+              </>
+            )}{" "}
+            The offer lapses on its own if nobody has accepted by the deadline.
           </p>
           {refund}
         </div>

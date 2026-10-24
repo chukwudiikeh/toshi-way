@@ -27,7 +27,8 @@ const unixSecs = z.number().int();
 
 export const Escrow = z.object({
   id: z.string().min(1),
-  buyer_id: z.string().min(1),
+  /** `null` for an open offer that nobody has accepted yet. */
+  buyer_id: z.string().min(1).nullable(),
   seller_id: z.string().min(1),
   amount_sats: z.number().int().positive(),
   description: z.string(),
@@ -88,7 +89,8 @@ export const HOLD_UNITS = { minutes: 60, hours: 3600 } as const;
 
 export const NewEscrowForm = z
   .object({
-    buyer_id: z.string().trim().min(1, "Enter the buyer's user id"),
+    /** Optional: leave empty for an open offer that the first user to accept becomes the buyer of. */
+    buyer_id: z.string().trim(),
     amount_sats: z.coerce
       .number({ error: "Enter an amount in sats" })
       .int("Whole sats only")
@@ -112,7 +114,7 @@ export const NewEscrowForm = z
       });
       return z.NEVER;
     }
-    return { buyer_id: f.buyer_id, amount_sats: f.amount_sats, description: f.description, hold_secs };
+    return { buyer_id: f.buyer_id || undefined, amount_sats: f.amount_sats, description: f.description, hold_secs };
   });
 export type NewEscrowRequest = z.output<typeof NewEscrowForm>;
 
