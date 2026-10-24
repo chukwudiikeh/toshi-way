@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lnd = LndAdapter::connect(
         &env("LND_ADDR", Some("https://localhost:10003")),
         env("LND_TLS_CERT", Some("regtest/creds/seller/tls.cert")),
-        env("LND_MACAROON", Some("regtest/creds/seller/admin.macaroon")),
+        env("LND_MACAROON", Some("regtest/creds/seller/toshi.macaroon")),
         Duration::from_secs(10),
     )
     .await?;
