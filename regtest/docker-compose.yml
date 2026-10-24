@@ -22,6 +22,21 @@ services:
       - "18443:18443"
     restart: unless-stopped
 
+  # Optional database for the PostgreSQL store. Not started by setup.sh; run it with
+  #   docker compose -f regtest/docker-compose.yml --profile postgres up -d postgres
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: toshi
+      POSTGRES_PASSWORD: toshi
+      POSTGRES_DB: toshi
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
   buyer:
     image: lightninglabs/lnd:v0.18.5-beta
     depends_on:
@@ -111,3 +126,4 @@ volumes:
   buyer:
   router:
   seller:
+  postgres:
