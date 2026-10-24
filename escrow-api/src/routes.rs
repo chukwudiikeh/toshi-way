@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use escrow_core::{
-    adapter::LightningAdapter,
+    adapter::{NodeConnectError, NodeCredentials, NodeDirectory, NodeSummary},
     model::{Escrow, PaymentHash, Preimage, Role, User},
     service::NewEscrow,
     state::EscrowState,
@@ -59,6 +59,9 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
         "created_at": e.created_at,
         "updated_at": e.updated_at,
         "your_role": party.as_str(),
+        // Whose node holds the invoice: "own" pays the seller directly; "shared" is the service's
+        // node, so the service receives the sats and owes them to the seller (custodial).
+        "seller_node": e.node.as_str(),
     })
 }
 
@@ -72,7 +75,7 @@ fn parse_hex32(field: &str, s: &str) -> Result<[u8; 32], ApiError> {
 /// Load an escrow the caller may see. Callers with no standing get 404, not 403.
 async fn load<A, S>(st: &AppState<A, S>, id: &str, user: &User) -> Result<(Escrow, Party), ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let escrow = st.service.get(id).await?;
@@ -84,7 +87,7 @@ where
 
 pub async fn health<A, S>(State(st): State<AppState<A, S>>) -> Response
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     // `server_time` lets browsers correct countdowns for their own clock skew.
@@ -106,7 +109,7 @@ pub async fn me(Auth(user): Auth) -> Json<Value> {
 
 pub async fn register<A, S>(State(st): State<AppState<A, S>>) -> Result<(StatusCode, Json<Value>), ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let token = new_token();
@@ -134,7 +137,7 @@ pub async fn create_escrow<A, S>(
     ApiJson(req): ApiJson<CreateReq>,
 ) -> Result<(StatusCode, Json<Value>), ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     if user.role == Role::Operator {
@@ -210,7 +213,7 @@ pub async fn list_mine<A, S>(
     Auth(user): Auth,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let list: Vec<Value> = st
@@ -229,7 +232,7 @@ pub async fn get_escrow<A, S>(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (escrow, party) = load(&st, &id, &user).await?;
@@ -248,7 +251,7 @@ pub async fn accept<A, S>(
     ApiJson(req): ApiJson<AcceptReq>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (_, party) = load(&st, &id, &user).await?;
@@ -256,6 +259,8 @@ where
         return Err(ApiError::forbidden("only the buyer can accept"));
     }
     let hash: PaymentHash = parse_hex32("payment_hash", &req.payment_hash)?;
+    // The invoice is made on the seller's node; keep that node from being swapped meanwhile.
+    let _node_guard = st.node_changes.read().await;
     let escrow = st.service.accept(&id, hash, &user.id, (st.now)()).await?;
     Ok(Json(escrow_view(&escrow, party)))
 }
@@ -266,7 +271,7 @@ pub async fn invoice<A, S>(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (escrow, party) = load(&st, &id, &user).await?;
@@ -297,7 +302,7 @@ pub async fn release<A, S>(
     ApiJson(req): ApiJson<ReleaseReq>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (_, party) = load(&st, &id, &user).await?;
@@ -318,7 +323,7 @@ pub async fn cancel<A, S>(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (escrow, party) = load(&st, &id, &user).await?;
@@ -348,7 +353,7 @@ pub async fn dispute<A, S>(
     ApiJson(req): ApiJson<DisputeReq>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let (_, party) = load(&st, &id, &user).await?;
@@ -368,7 +373,7 @@ pub async fn events<A, S>(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     load(&st, &id, &user).await?;
@@ -399,7 +404,7 @@ pub async fn operator_list<A, S>(
     Auth(user): Auth,
 ) -> Result<Json<Value>, ApiError>
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     if user.role != Role::Operator {
@@ -408,4 +413,105 @@ where
     let list: Vec<Value> =
         st.service.list_active().await?.iter().map(|e| escrow_view(e, Party::Operator)).collect();
     Ok(Json(json!({ "escrows": list })))
+}
+
+// --- The seller's own Lightning node --------------------------------------------------------
+
+/// How the caller's escrows will be served. Never includes the macaroon or certificate.
+async fn node_view<A, S>(st: &AppState<A, S>, user: &User) -> Result<Value, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let dir = st.service.directory();
+    let own: Option<NodeSummary> = dir.seller_node_summary(&user.id).await?;
+    let shared = dir.offers_shared_node();
+    let mode = match (&own, shared) {
+        (Some(_), _) => "own",
+        (None, true) => "shared",
+        (None, false) => "none",
+    };
+    Ok(json!({
+        "mode": mode,
+        "address": own.as_ref().map(|n| n.address.clone()),
+        "connected_at": own.as_ref().map(|n| n.updated_at),
+        // True when sellers without a node still get a (custodial) shared one.
+        "shared_available": shared,
+        // False when the server has no credential key, so sellers cannot connect nodes at all.
+        "own_nodes_enabled": dir.accepts_seller_nodes(),
+        "can_change": !st.service.has_active_own_node_escrows(&user.id).await?,
+    }))
+}
+
+fn require_user(user: &User) -> Result<(), ApiError> {
+    if user.role == Role::Operator {
+        return Err(ApiError::forbidden("operators cannot have a seller node"));
+    }
+    Ok(())
+}
+
+pub async fn node_get<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    require_user(&user)?;
+    Ok(Json(node_view(&st, &user).await?))
+}
+
+#[derive(Deserialize)]
+pub struct NodeReq {
+    address: String,
+    tls_cert: String,
+    /// Hex of an invoice-only macaroon.
+    macaroon: String,
+}
+
+pub async fn node_put<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    ApiJson(req): ApiJson<NodeReq>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    require_user(&user)?;
+    // Exclusive: no invoice may be created on the old node while it is being replaced.
+    let _guard = st.node_changes.write().await;
+    if st.service.has_active_own_node_escrows(&user.id).await? {
+        return Err(node_in_use());
+    }
+    let creds = NodeCredentials { address: req.address, tls_cert: req.tls_cert, macaroon_hex: req.macaroon };
+    match st.service.directory().register_seller_node(&user.id, creds, (st.now)()).await {
+        Ok(_) => {}
+        Err(NodeConnectError::Invalid(m)) => return Err(ApiError::bad_request("invalid_node", m)),
+        Err(NodeConnectError::CheckFailed(m)) => {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node_check_failed", m))
+        }
+        Err(NodeConnectError::Adapter(e)) => return Err(escrow_core::service::ServiceError::from(e).into()),
+    }
+    Ok(Json(node_view(&st, &user).await?))
+}
+
+pub async fn node_delete<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    require_user(&user)?;
+    let _guard = st.node_changes.write().await;
+    if st.service.has_active_own_node_escrows(&user.id).await? {
+        return Err(node_in_use());
+    }
+    st.service.directory().remove_seller_node(&user.id).await?;
+    Ok(Json(node_view(&st, &user).await?))
+}
+
+fn node_in_use() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "node_in_use",
+        "you have escrows in progress on this node; finish or cancel them before changing it",
+    )
 }

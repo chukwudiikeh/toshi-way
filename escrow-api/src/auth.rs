@@ -4,7 +4,7 @@
 
 use axum::{extract::FromRequestParts, http::request::Parts};
 use escrow_core::{
-    adapter::LightningAdapter,
+    adapter::NodeDirectory,
     model::{Escrow, Role, User},
     state::EscrowState,
     store::{Store, UserStore},
@@ -74,7 +74,7 @@ pub struct Auth(pub User);
 
 impl<A, S> FromRequestParts<AppState<A, S>> for Auth
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     type Rejection = ApiError;
@@ -106,6 +106,7 @@ mod tests {
         Escrow {
             id: "e".into(),
             buyer_id: Some("b".into()),
+            node: escrow_core::model::NodeKind::Shared,
             seller_id: "s".into(),
             amount_sats: 1,
             description: String::new(),

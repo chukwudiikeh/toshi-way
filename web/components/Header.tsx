@@ -55,6 +55,9 @@ export function Header() {
               >
                 New escrow
               </Link>
+              <Link href="/node" className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                My node
+              </Link>
             </>
           )}
           {session?.kind === "operator" && (

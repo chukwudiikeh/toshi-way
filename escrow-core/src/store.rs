@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeEventRecord, PaymentHash, User},
+    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User},
     state::EscrowState,
 };
 
@@ -61,6 +61,11 @@ pub trait UserStore: Send + Sync {
     async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError>;
     async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError>;
     async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError>;
+    /// Save (replacing any earlier one) how to reach a seller's own node.
+    async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError>;
+    async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError>;
+    /// `true` if there was one to delete.
+    async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError>;
 }
 
 #[derive(Default)]
@@ -74,6 +79,7 @@ struct MemoryInner {
     audit: Vec<AuditEntry>,
     node_events: Vec<NodeEventRecord>,
     users: Vec<(User, String)>,
+    node_connections: Vec<NodeConnection>,
 }
 
 impl MemoryStore {
@@ -252,6 +258,24 @@ impl UserStore for MemoryStore {
     async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
         Ok(self.inner.lock().unwrap().users.iter().find(|(u, _)| u.id == id).map(|(u, _)| u.clone()))
     }
+
+    async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.node_connections.retain(|c| c.user_id != conn.user_id);
+        g.node_connections.push(conn);
+        Ok(())
+    }
+
+    async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError> {
+        Ok(self.inner.lock().unwrap().node_connections.iter().find(|c| c.user_id == user_id).cloned())
+    }
+
+    async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        let before = g.node_connections.len();
+        g.node_connections.retain(|c| c.user_id != user_id);
+        Ok(g.node_connections.len() != before)
+    }
 }
 
 #[async_trait]
@@ -264,5 +288,14 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
     }
     async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
         (**self).get_user(id).await
+    }
+    async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError> {
+        (**self).put_node_connection(conn).await
+    }
+    async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError> {
+        (**self).node_connection(user_id).await
+    }
+    async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError> {
+        (**self).delete_node_connection(user_id).await
     }
 }

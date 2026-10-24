@@ -9,8 +9,11 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
-    model::{InvoiceEvent, NodeInvoice, NodeInvoiceState, PaymentHash, Preimage},
+    adapter::{
+        AdapterError, HoldInvoiceRequest, LightningAdapter, NodeConnectError, NodeCredentials, NodeDirectory,
+        NodeSummary,
+    },
+    model::{InvoiceEvent, NodeInvoice, NodeInvoiceState, NodeKind, PaymentHash, Preimage},
 };
 
 #[derive(Default)]
@@ -141,5 +144,135 @@ impl LightningAdapter for MockLightning {
         let g = self.0.lock().unwrap();
         check_online(&g)?;
         Ok(g.invoices.get(payment_hash).cloned())
+    }
+}
+
+/// One mock node serving everyone, as the service did before sellers could bring their own.
+#[async_trait]
+impl NodeDirectory for MockLightning {
+    type Node = MockLightning;
+
+    async fn kind_for_new(&self, _seller_id: &str) -> Result<NodeKind, AdapterError> {
+        Ok(NodeKind::Shared)
+    }
+
+    async fn node(&self, _seller_id: &str, _kind: NodeKind) -> Result<MockLightning, AdapterError> {
+        Ok(self.clone())
+    }
+
+    async fn ping(&self) -> Result<(), AdapterError> {
+        LightningAdapter::ping(self).await
+    }
+}
+
+/// Several mock nodes: each connected seller has their own, and an optional shared one serves the
+/// rest. Lets tests prove that an escrow lands on its own seller's node and no one else's.
+#[derive(Clone, Default)]
+pub struct MockDirectory {
+    inner: Arc<Mutex<DirectoryInner>>,
+}
+
+#[derive(Default)]
+struct DirectoryInner {
+    own: HashMap<String, MockLightning>,
+    shared: Option<MockLightning>,
+    summaries: HashMap<String, NodeSummary>,
+}
+
+impl MockDirectory {
+    pub fn new(shared: Option<MockLightning>) -> Self {
+        Self { inner: Arc::new(Mutex::new(DirectoryInner { own: HashMap::new(), shared, summaries: HashMap::new() })) }
+    }
+
+    /// The seller connects their own node.
+    pub fn connect_seller(&self, seller_id: &str, node: MockLightning) {
+        self.inner.lock().unwrap().own.insert(seller_id.to_string(), node);
+    }
+
+    pub fn disconnect_seller(&self, seller_id: &str) {
+        self.inner.lock().unwrap().own.remove(seller_id);
+    }
+
+    /// The node created for a seller by `register_seller_node`.
+    pub fn seller_node(&self, seller_id: &str) -> Option<MockLightning> {
+        self.inner.lock().unwrap().own.get(seller_id).cloned()
+    }
+}
+
+#[async_trait]
+impl NodeDirectory for MockDirectory {
+    type Node = MockLightning;
+
+    async fn kind_for_new(&self, seller_id: &str) -> Result<NodeKind, AdapterError> {
+        let g = self.inner.lock().unwrap();
+        if g.own.contains_key(seller_id) {
+            Ok(NodeKind::Own)
+        } else if g.shared.is_some() {
+            Ok(NodeKind::Shared)
+        } else {
+            Err(AdapterError::NoNode("connect your Lightning node first".into()))
+        }
+    }
+
+    async fn node(&self, seller_id: &str, kind: NodeKind) -> Result<MockLightning, AdapterError> {
+        let g = self.inner.lock().unwrap();
+        let found = match kind {
+            NodeKind::Own => g.own.get(seller_id),
+            NodeKind::Shared => g.shared.as_ref(),
+        };
+        found.cloned().ok_or_else(|| AdapterError::NoNode(format!("no {} node for this seller", kind.as_str())))
+    }
+
+    fn offers_shared_node(&self) -> bool {
+        self.inner.lock().unwrap().shared.is_some()
+    }
+
+    fn accepts_seller_nodes(&self) -> bool {
+        true
+    }
+
+    /// Accepts any `https://` address and a hex macaroon, except hosts containing "unreachable" or
+    /// "badperm", which fail the connection check the way a dead or over-restricted node would.
+    async fn register_seller_node(
+        &self,
+        seller_id: &str,
+        creds: NodeCredentials,
+        now: i64,
+    ) -> Result<NodeSummary, NodeConnectError> {
+        if !creds.address.starts_with("https://") {
+            return Err(NodeConnectError::Invalid("the node address must start with https://".into()));
+        }
+        if hex::decode(&creds.macaroon_hex).map(|b| b.is_empty()).unwrap_or(true) {
+            return Err(NodeConnectError::Invalid("the macaroon must be hex".into()));
+        }
+        if creds.address.contains("unreachable") {
+            return Err(NodeConnectError::Adapter(AdapterError::Unavailable("connection refused".into())));
+        }
+        if creds.address.contains("badperm") {
+            return Err(NodeConnectError::CheckFailed("the macaroon cannot create invoices".into()));
+        }
+        let summary = NodeSummary { address: creds.address, updated_at: now };
+        let mut g = self.inner.lock().unwrap();
+        g.own.insert(seller_id.to_string(), MockLightning::new());
+        g.summaries.insert(seller_id.to_string(), summary.clone());
+        Ok(summary)
+    }
+
+    async fn remove_seller_node(&self, seller_id: &str) -> Result<bool, AdapterError> {
+        let mut g = self.inner.lock().unwrap();
+        g.summaries.remove(seller_id);
+        Ok(g.own.remove(seller_id).is_some())
+    }
+
+    async fn seller_node_summary(&self, seller_id: &str) -> Result<Option<NodeSummary>, AdapterError> {
+        Ok(self.inner.lock().unwrap().summaries.get(seller_id).cloned())
+    }
+
+    async fn ping(&self) -> Result<(), AdapterError> {
+        let shared = self.inner.lock().unwrap().shared.clone();
+        match shared {
+            Some(n) => LightningAdapter::ping(&n).await,
+            None => Ok(()),
+        }
     }
 }

@@ -3,14 +3,17 @@
 //! Every node call carries a timeout. `settle_invoice` and `cancel_invoice` are idempotent: if
 //! LND refuses because the invoice is already in the wanted state, that counts as success.
 
+pub mod address;
+pub mod creds;
+pub mod directory;
 pub mod runner;
 
 use std::{path::Path, time::Duration};
 
 use async_trait::async_trait;
 use escrow_core::{
-    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
-    model::{InvoiceEvent, NodeInvoice, NodeInvoiceState, PaymentHash, Preimage},
+    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter, NodeDirectory},
+    model::{InvoiceEvent, NodeInvoice, NodeInvoiceState, NodeKind, PaymentHash, Preimage},
 };
 use fedimint_tonic_lnd::{
     connect,
@@ -52,6 +55,10 @@ fn node_state(state: i32) -> Option<NodeInvoiceState> {
     }
 }
 
+fn sha2_hash(bytes: &[u8]) -> PaymentHash {
+    escrow_core::model::Preimage::from_bytes(bytes.try_into().expect("32 bytes")).hash()
+}
+
 fn to_hash(bytes: &[u8]) -> Option<PaymentHash> {
     bytes.try_into().ok()
 }
@@ -71,6 +78,62 @@ impl LndAdapter {
             .map_err(|_| AdapterError::Unavailable("timed out connecting to the node".into()))?
             .map_err(|e| AdapterError::Unavailable(e.to_string()))?;
         Ok(Self { client, timeout })
+    }
+
+    /// Connect with credentials held in memory (a seller's node, from the database). The client
+    /// library only reads credentials from files, so they are written to a private temporary
+    /// directory, read by the connection, and deleted again straight away. The connection is
+    /// pinned to exactly this certificate, so a different server cannot answer in the node's place.
+    pub async fn connect_from_memory(
+        address: &str,
+        tls_cert_pem: &str,
+        macaroon: &[u8],
+        timeout: Duration,
+    ) -> Result<Self, AdapterError> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        use std::io::Write;
+
+        let mut nonce = [0u8; 8];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+        let dir = std::env::temp_dir().join(format!("toshi-node-{}", hex::encode(nonce)));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| AdapterError::Unavailable(format!("could not prepare credentials: {e}")))?;
+        let write = |name: &str, bytes: &[u8]| -> std::io::Result<std::path::PathBuf> {
+            let path = dir.join(name);
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+            f.write_all(bytes)?;
+            Ok(path)
+        };
+        let result = async {
+            let cert = write("tls.cert", tls_cert_pem.as_bytes()).map_err(|e| e.to_string())?;
+            let mac = write("node.macaroon", macaroon).map_err(|e| e.to_string())?;
+            Self::connect(address, cert, mac, timeout).await.map_err(|e| e.to_string())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        result.map_err(AdapterError::Unavailable)
+    }
+
+    /// Prove this connection can do what escrows need: the node answers and is synced, can read
+    /// invoices, and can create and cancel one. A throwaway hold invoice is made and cancelled.
+    pub async fn check_invoice_access(&self) -> Result<(), AdapterError> {
+        LightningAdapter::ping(self).await?;
+        let mut probe = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut probe);
+        let hash: PaymentHash = sha2_hash(&probe);
+        self.create_hold_invoice(HoldInvoiceRequest {
+            payment_hash: hash,
+            amount_sats: 1,
+            memo: "toshi-way connection check".into(),
+            expiry_secs: 60,
+            final_cltv_delta: 80,
+        })
+        .await?;
+        self.cancel_invoice(&hash).await?;
+        self.lookup_invoice(&hash).await?;
+        Ok(())
     }
 
     /// Wrap a call in the adapter's timeout.
@@ -221,5 +284,24 @@ impl LightningAdapter for LndAdapter {
             state,
             htlc_expiry_height: inv.htlcs.iter().map(|h| h.expiry_height as u32).min(),
         }))
+    }
+}
+
+/// A single node serving every seller: how the service ran before sellers could bring their own,
+/// and how the adapter is used directly in tests.
+#[async_trait]
+impl NodeDirectory for LndAdapter {
+    type Node = LndAdapter;
+
+    async fn kind_for_new(&self, _seller_id: &str) -> Result<NodeKind, AdapterError> {
+        Ok(NodeKind::Shared)
+    }
+
+    async fn node(&self, _seller_id: &str, _kind: NodeKind) -> Result<LndAdapter, AdapterError> {
+        Ok(self.clone())
+    }
+
+    async fn ping(&self) -> Result<(), AdapterError> {
+        LightningAdapter::ping(self).await
     }
 }
