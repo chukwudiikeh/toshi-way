@@ -47,7 +47,7 @@ States: `CREATED`, `INVOICE_ISSUED`, `LOCKED`, `SETTLED`, `REFUNDED`, `EXPIRED_U
 
 | From | To |
 |------|----|
-| CREATED | INVOICE_ISSUED |
+| CREATED | INVOICE_ISSUED, EXPIRED_UNPAID (offer withdrawn, declined or lapsed) |
 | INVOICE_ISSUED | LOCKED, EXPIRED_UNPAID |
 | LOCKED | SETTLED, REFUNDED, DISPUTED |
 | DISPUTED | REFUNDED, SETTLED (operator, within safe window) |
@@ -87,6 +87,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 | POST | `/api/v1/escrows/:id/cancel` | Request cancellation |
 | POST | `/api/v1/escrows/:id/dispute` | Flag a dispute |
 | GET | `/api/v1/escrows/:id/events` | Audit and event history |
+| GET | `/api/v1/me` | The caller's `{id, role}` |
 | GET | `/health` | Health, including node connectivity and `server_time` |
 
 ## Milestones
@@ -140,7 +141,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] CORS, `GET /api/v1/escrows` (own escrows), Next.js scaffold in `web/`
 - [x] Phase 4 frontend (`web/`): account, new escrow, escrow page by role and state with release QR hand-over, operator queue; 44 unit tests; both demo paths pass end to end in the browser (Playwright, `npm run e2e`)
 - [x] `server_time` on `/health` for client clock-skew correction
-- [ ] Hardening: withdraw/expire `CREATED` offers, `GET /api/v1/me`, restricted macaroon, restart test on real node
+- [x] Hardening 1: `CREATED` offers can be withdrawn (seller, operator) or declined (buyer) and lapse at their deadline; `GET /api/v1/me`
+- [ ] Hardening 2: restricted macaroon, restart test on real node, demo rehearsal
 
 ## Open questions
 

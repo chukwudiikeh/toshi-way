@@ -237,10 +237,24 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
     }
 
     /// Cancel the hold invoice. Repeating it on an already cancelled escrow is a no-op.
+    /// An offer nobody has accepted has no invoice, so withdrawing it needs no node call.
     pub async fn cancel(&self, id: &str, actor: &str, reason: &str, now: i64) -> Result<Escrow, ServiceError> {
         let e = self.get(id).await?;
         let hash = match (e.state, e.payment_hash) {
             (EscrowState::Refunded | EscrowState::ExpiredUnpaid, _) => return Ok(e),
+            (EscrowState::Created, _) => {
+                return match self
+                    .move_to(&e, EscrowState::ExpiredUnpaid, EscrowUpdate::default(), actor, "cancel", reason, now)
+                    .await
+                {
+                    // A concurrent actor (the buyer accepting, the scheduler) got there first.
+                    Err(ServiceError::Store(StoreError::Conflict)) => Err(ServiceError::InvalidState {
+                        action: "cancel",
+                        state: self.get(id).await?.state,
+                    }),
+                    other => other,
+                };
+            }
             (EscrowState::InvoiceIssued | EscrowState::Locked | EscrowState::Disputed, Some(h)) => h,
             (state, _) => return Err(ServiceError::InvalidState { action: "cancel", state }),
         };
@@ -263,11 +277,13 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
             .await
     }
 
-    /// The scheduler pass: cancel holds at their deadline and unpaid invoices once they expire.
+    /// The scheduler pass: cancel holds at their deadline, unpaid invoices once they expire, and
+    /// offers nobody accepted before their deadline.
     pub async fn tick(&self, now: i64) -> Result<TickReport, ServiceError> {
         let mut report = TickReport::default();
         for e in self.store.list_active().await? {
             let due = match e.state {
+                EscrowState::Created => now >= e.deadline_at,
                 EscrowState::Locked | EscrowState::Disputed => now >= e.deadline_at,
                 EscrowState::InvoiceIssued => e.invoice_expires_at.is_some_and(|t| now >= t),
                 _ => false,

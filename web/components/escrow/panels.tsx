@@ -108,7 +108,7 @@ function NextSteps({ escrow }: { escrow: Escrow }) {
       : seller
         ? "Cancelled. The buyer was refunded."
         : "Refunded to the buyer.",
-    EXPIRED_UNPAID: "The invoice expired before it was paid. Nothing was paid and nothing is owed.",
+    EXPIRED_UNPAID: "This offer ended without a payment: it was withdrawn, declined or its time ran out. Nothing was paid and nothing is owed.",
     FAILED: "Something went wrong between the escrow and the Lightning node. An operator needs to look at it.",
   };
   return <p className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">{text[escrow.state]}</p>;
@@ -131,7 +131,7 @@ function FinalSummary({ escrow }: { escrow: Escrow }) {
     case "REFUNDED":
       return <Notice tone="success">{formatSats(escrow.amount_sats)} returned to the buyer.</Notice>;
     case "EXPIRED_UNPAID":
-      return <Notice tone="info">The invoice expired unpaid.</Notice>;
+      return <Notice tone="info">Ended without a payment.</Notice>;
     case "FAILED":
       return <Notice tone="error">Needs operator attention. Your funds are governed by the Lightning node.</Notice>;
     default:
@@ -178,6 +178,15 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
           <Button onClick={accept} busy={actions.busy === "accept"}>
             Accept offer of {formatSats(escrow.amount_sats)}
           </Button>
+          <ConfirmButton
+            confirmText="Decline this offer? Nothing has been paid."
+            confirmLabel="Yes, decline"
+            variant="danger"
+            busy={actions.busy === "cancel"}
+            onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
+          >
+            Decline
+          </ConfirmButton>
         </div>
       );
     case "INVOICE_ISSUED":
@@ -361,16 +370,16 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
   const refund = (
     <ConfirmButton
       confirmText={
-        escrow.state === "INVOICE_ISSUED"
+        escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED"
           ? "Withdraw this offer? The buyer won't be able to pay."
           : `Give the buyer their ${formatSats(escrow.amount_sats)} back? You will not be paid. This can't be undone.`
       }
-      confirmLabel={escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Refund the buyer"}
+      confirmLabel={escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Refund the buyer"}
       variant="danger"
       busy={actions.busy === "cancel"}
       onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
     >
-      {escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Give refund"}
+      {escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Give refund"}
     </ConfirmButton>
   );
 
@@ -381,8 +390,10 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           <div className="text-sm font-medium">Link for the buyer</div>
           <CopyField value={`${appUrl()}/escrows/${escrow.id}`} label="Copy link" />
           <p className="text-xs text-neutral-500">
-            The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it.
+            The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it. The offer
+            lapses on its own if the buyer hasn&apos;t accepted by the deadline.
           </p>
+          {refund}
         </div>
       );
     case "INVOICE_ISSUED":

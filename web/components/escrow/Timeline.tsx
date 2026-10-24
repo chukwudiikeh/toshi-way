@@ -10,7 +10,7 @@ const toStateText: Record<string, string> = {
   LOCKED: "Funds locked",
   SETTLED: "Seller paid",
   REFUNDED: "Buyer refunded",
-  EXPIRED_UNPAID: "Invoice expired unpaid",
+  EXPIRED_UNPAID: "Ended without payment",
   DISPUTED: "Dispute opened",
   FAILED: "Marked for operator attention",
 };
