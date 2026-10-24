@@ -15,10 +15,14 @@ use sqlx::{
 
 /// Schema migrations, applied in order and recorded in `schema_migrations`. Never edit one that
 /// has shipped: add a new one.
-const MIGRATIONS: &[&str] =
-    &[include_str!("migrations/001_initial.sql"), include_str!("migrations/002_own_nodes.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/001_initial.sql"),
+    include_str!("migrations/002_own_nodes.sql"),
+    include_str!("migrations/003_arbitration.sql"),
+];
 
-const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, node, amount_sats, description, payment_hash, \
+const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
+     arbiter_confirmed_at, node, amount_sats, description, payment_hash, \
      invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
 
 /// Arbitrary constant naming the advisory lock that serialises migrations between instances.
@@ -42,7 +46,7 @@ impl PostgresStore {
 
     /// Delete everything, for tests that share a database. Never call this on real data.
     pub async fn wipe_for_tests(&self) -> Result<(), StoreError> {
-        sqlx::query("TRUNCATE node_connections, node_events, audit_log, escrows, users RESTART IDENTITY CASCADE")
+        sqlx::query("TRUNCATE arbiter_keys, node_connections, node_events, audit_log, escrows, users RESTART IDENTITY CASCADE")
             .execute(&self.pool)
             .await
             .map_err(backend)?;
@@ -101,6 +105,10 @@ fn escrow_from_row(row: &PgRow) -> Result<Escrow, StoreError> {
         id: row.try_get("id").map_err(backend)?,
         buyer_id: row.try_get("buyer_id").map_err(backend)?,
         seller_id: row.try_get("seller_id").map_err(backend)?,
+        arbiter_id: row.try_get("arbiter_id").map_err(backend)?,
+        arbiter_key: row.try_get("arbiter_key").map_err(backend)?,
+        arbiter_sealed: row.try_get("arbiter_sealed").map_err(backend)?,
+        arbiter_confirmed_at: row.try_get("arbiter_confirmed_at").map_err(backend)?,
         node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
         description: row.try_get("description").map_err(backend)?,
@@ -144,11 +152,15 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for PostgresStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
         .bind(&e.seller_id)
+        .bind(&e.arbiter_id)
+        .bind(&e.arbiter_key)
+        .bind(&e.arbiter_sealed)
+        .bind(e.arbiter_confirmed_at)
         .bind(e.node.as_str())
         .bind(e.amount_sats as i64)
         .bind(&e.description)
@@ -204,7 +216,7 @@ impl Store for PostgresStore {
 
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
         let rows = sqlx::query(&format!(
-            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = $1 OR seller_id = $1 \
+            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = $1 OR seller_id = $1 OR arbiter_id = $1 \
              ORDER BY created_at DESC, id ASC LIMIT 100"
         ))
         .bind(user_id)
@@ -230,7 +242,9 @@ impl Store for PostgresStore {
                  buyer_id = COALESCE($3, buyer_id), \
                  payment_hash = COALESCE($4, payment_hash), \
                  invoice = COALESCE($5, invoice), \
-                 invoice_expires_at = COALESCE($6, invoice_expires_at) \
+                 invoice_expires_at = COALESCE($6, invoice_expires_at), \
+                 arbiter_sealed = COALESCE($9, arbiter_sealed), \
+                 arbiter_confirmed_at = COALESCE($10, arbiter_confirmed_at) \
              WHERE id = $8 AND state = $7",
         )
         .bind(audit.to_state.as_str())
@@ -241,6 +255,8 @@ impl Store for PostgresStore {
         .bind(update.invoice_expires_at)
         .bind(expected.as_str())
         .bind(id)
+        .bind(&update.arbiter_sealed)
+        .bind(update.arbiter_confirmed_at)
         .execute(&mut *tx)
         .await;
         let rows = match res {
@@ -385,6 +401,29 @@ impl UserStore for PostgresStore {
             .await
             .map_err(backend)?;
         row.as_ref().map(user_from_row).transpose()
+    }
+
+    async fn put_arbiter_key(&self, user_id: &str, public_key: &str, at: i64) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO arbiter_keys (user_id, public_key, updated_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (user_id) DO UPDATE SET public_key = EXCLUDED.public_key, updated_at = EXCLUDED.updated_at",
+        )
+        .bind(user_id)
+        .bind(public_key)
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn arbiter_key(&self, user_id: &str) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query("SELECT public_key FROM arbiter_keys WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.map(|r| r.try_get("public_key").map_err(backend)).transpose()
     }
 
     async fn put_node_connection(&self, c: NodeConnection) -> Result<(), StoreError> {

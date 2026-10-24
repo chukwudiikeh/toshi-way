@@ -123,6 +123,21 @@ function Summary({ escrow }: { escrow: NonNullable<ReturnType<typeof useEscrow>[
         <StateBadge state={escrow.state} />
       </div>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+        {escrow.arbiter_id && (
+          <div className="sm:col-span-2">
+            <dt className="text-neutral-500">Arbiter</dt>
+            <dd className="text-sm">
+              <span className="font-mono">{escrow.arbiter_id}</span>
+              {" · "}
+              {escrow.arbiter_confirmed_at ? (
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">confirmed</span>
+              ) : (
+                <span className="font-medium text-amber-700 dark:text-amber-400">not confirmed yet</span>
+              )}
+              <div className="break-words font-mono text-xs text-neutral-500">key {escrow.arbiter_fingerprint}</div>
+            </dd>
+          </div>
+        )}
         <div>
           <dt className="text-neutral-500">Funds go to</dt>
           <dd className="text-sm font-medium">

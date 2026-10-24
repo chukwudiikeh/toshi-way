@@ -3,6 +3,7 @@
 //! Handlers never decide payment state: they authenticate, authorize against the escrow's
 //! parties, validate input, and call the escrow service, whose state comes from the node.
 
+pub mod arbiter;
 pub mod auth;
 pub mod error;
 pub mod ratelimit;
@@ -170,6 +171,10 @@ where
         .route("/api/v1/users", post(routes::register::<A, S>))
         .route("/api/v1/me", get(routes::me))
         .route(
+            "/api/v1/me/arbiter-key",
+            get(routes::arbiter_key_get::<A, S>).put(routes::arbiter_key_put::<A, S>),
+        )
+        .route(
             "/api/v1/me/node",
             get(routes::node_get::<A, S>).put(routes::node_put::<A, S>).delete(routes::node_delete::<A, S>),
         )
@@ -181,6 +186,9 @@ where
         .route("/api/v1/escrows/{id}/cancel", post(routes::cancel::<A, S>))
         .route("/api/v1/escrows/{id}/dispute", post(routes::dispute::<A, S>))
         .route("/api/v1/escrows/{id}/events", get(routes::events::<A, S>))
+        .route("/api/v1/escrows/{id}/arbitration", get(routes::arbitration_get::<A, S>))
+        .route("/api/v1/escrows/{id}/arbitration/confirm", post(routes::arbitration_confirm::<A, S>))
+        .route("/api/v1/escrows/{id}/arbitration/decide", post(routes::arbitration_decide::<A, S>))
         .route("/api/v1/operator/escrows", get(routes::operator_list::<A, S>))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::<A, S>))
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))

@@ -19,8 +19,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/001_initial.sql"),
     include_str!("migrations/002_open_offers.sql"),
     include_str!("migrations/003_own_nodes.sql"),
+    include_str!("migrations/004_arbitration.sql"),
 ];
-const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, node, amount_sats, description, payment_hash, \
+const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
+     arbiter_confirmed_at, node, amount_sats, description, payment_hash, \
      invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
 
 pub struct SqliteStore {
@@ -106,6 +108,10 @@ fn escrow_from_row(row: &SqliteRow) -> Result<Escrow, StoreError> {
         id: row.try_get("id").map_err(backend)?,
         buyer_id: row.try_get("buyer_id").map_err(backend)?,
         seller_id: row.try_get("seller_id").map_err(backend)?,
+        arbiter_id: row.try_get("arbiter_id").map_err(backend)?,
+        arbiter_key: row.try_get("arbiter_key").map_err(backend)?,
+        arbiter_sealed: row.try_get("arbiter_sealed").map_err(backend)?,
+        arbiter_confirmed_at: row.try_get("arbiter_confirmed_at").map_err(backend)?,
         node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
         description: row.try_get("description").map_err(backend)?,
@@ -149,11 +155,15 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for SqliteStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
         .bind(&e.seller_id)
+        .bind(&e.arbiter_id)
+        .bind(&e.arbiter_key)
+        .bind(&e.arbiter_sealed)
+        .bind(e.arbiter_confirmed_at)
         .bind(e.node.as_str())
         .bind(e.amount_sats as i64)
         .bind(&e.description)
@@ -211,7 +221,7 @@ impl Store for SqliteStore {
 
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
         let rows = sqlx::query(&format!(
-            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = ?1 OR seller_id = ?1 \
+            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = ?1 OR seller_id = ?1 OR arbiter_id = ?1 \
              ORDER BY created_at DESC, id ASC LIMIT 100"
         ))
         .bind(user_id)
@@ -236,7 +246,9 @@ impl Store for SqliteStore {
                  buyer_id = COALESCE(?, buyer_id), \
                  payment_hash = COALESCE(?, payment_hash), \
                  invoice = COALESCE(?, invoice), \
-                 invoice_expires_at = COALESCE(?, invoice_expires_at) \
+                 invoice_expires_at = COALESCE(?, invoice_expires_at), \
+                 arbiter_sealed = COALESCE(?, arbiter_sealed), \
+                 arbiter_confirmed_at = COALESCE(?, arbiter_confirmed_at) \
              WHERE id = ? AND state = ?",
         )
         .bind(audit.to_state.as_str())
@@ -245,6 +257,8 @@ impl Store for SqliteStore {
         .bind(update.payment_hash.map(hex::encode))
         .bind(&update.invoice)
         .bind(update.invoice_expires_at)
+        .bind(&update.arbiter_sealed)
+        .bind(update.arbiter_confirmed_at)
         .bind(id)
         .bind(expected.as_str())
         .execute(&mut *tx)
@@ -391,6 +405,29 @@ impl UserStore for SqliteStore {
             .await
             .map_err(backend)?;
         row.as_ref().map(user_from_row).transpose()
+    }
+
+    async fn put_arbiter_key(&self, user_id: &str, public_key: &str, at: i64) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO arbiter_keys (user_id, public_key, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET public_key = excluded.public_key, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(public_key)
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn arbiter_key(&self, user_id: &str) -> Result<Option<String>, StoreError> {
+        let row = sqlx::query("SELECT public_key FROM arbiter_keys WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.map(|r| r.try_get("public_key").map_err(backend)).transpose()
     }
 
     async fn put_node_connection(&self, c: NodeConnection) -> Result<(), StoreError> {

@@ -39,7 +39,7 @@ The service runs the node and holds `P`, settling or cancelling based on a verif
 
 ## Non-goals (MVP)
 
-Custody beyond what the node holds in flight, automated arbitration, fiat on/off-ramps, custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
+Custody beyond what the node holds in flight, fiat on/off-ramps, custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
 
 ## Escrow state machine
 
@@ -80,6 +80,16 @@ Each escrow records which node holds its invoice (`seller_node` in the API):
 
 The kind is fixed when the escrow is created, so changing node settings cannot strand an invoice. A seller cannot change or remove their node while an escrow with an invoice is in flight on it.
 
+## Arbitration
+
+A seller can name an **arbiter** when creating an escrow: a user both sides trust to decide a dispute. Without one, behaviour is unchanged (a dispute is flagged and the operator can cancel).
+
+- **Why it needs cryptography.** A refund only needs a cancel, but a release needs the buyer's secret `P`, which only the buyer's browser has. So when the buyer accepts, their browser encrypts `P` to the arbiter's public key (ECDH P-256 + HKDF-SHA-256 + AES-256-GCM, bound to that key) and uploads only the ciphertext. The server stores it but cannot read it; only the arbiter's browser can.
+- **Setting up.** An arbiter opens the Arbiter page, which makes a key pair in their browser, registers the public half, and keeps the private half on their device (with backup and restore). The key's fingerprint is shown on every escrow that names them so both sides can check it with the arbiter out of band. The key is recorded on the escrow at creation, so it cannot be swapped afterwards.
+- **Confirmation.** The server cannot check the sealed blob, and a buyer could upload junk. So before relying on arbitration the arbiter opens the blob, checks `sha256(P)` equals the payment hash, and confirms. The seller sees "not confirmed yet" until then.
+- **Deciding.** Only the named arbiter, only while the escrow is `DISPUTED`, and only before the deadline (a hold cannot be extended). *Release* sends the opened `P`, checked against the hash like any release; *refund* cancels the hold. The decision and the arbiter's note go on the audit log before the node is touched, and a rejected attempt leaves no trace. Once an arbitrated escrow is disputed the operator can no longer cancel it.
+- **Limits, stated plainly.** The arbiter is trusted by both sides, which is what an arbiter is: they hold the means to release (they can open `P`) and could leak it. The server can still relay a swapped key if the parties never compare fingerprints, though the arbiter's confirmation would then fail. If nobody decides before the deadline the buyer is refunded. Arbiters are not paid or ranked by this service. The server does not validate that a registered key is a real curve point; a bad one only stops the arbiter's own escrows.
+
 ## Trust model
 
 In Mode A nobody holds the funds, but the seller's node sees `P` at settlement and the coordinator is trusted to relay state correctly. Revealing `P` shows the buyer chose to release, not that the work was good. The buyer holds the power to withhold `P`, so the strongest use case is delivery, where the recipient must be present at handoff.
@@ -88,15 +98,19 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id` optional: omit it for an open offer) |
+| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id` optional: omit it for an open offer; `arbiter_id` optional) |
+| POST | `/api/v1/escrows/:id/accept` | Buyer accepts and submits `H` (and `sealed_secret` when there is an arbiter) |
 | GET | `/api/v1/escrows/:id` | Details and state |
-| POST | `/api/v1/escrows/:id/accept` | Buyer accepts and submits `H` |
 | GET | `/api/v1/escrows/:id/invoice` | Hold invoice to pay |
 | POST | `/api/v1/escrows/:id/release` | Submit `P` to settle |
 | POST | `/api/v1/escrows/:id/cancel` | Request cancellation |
 | POST | `/api/v1/escrows/:id/dispute` | Flag a dispute |
 | GET | `/api/v1/escrows/:id/events` | Audit and event history |
 | GET | `/api/v1/me` | The caller's `{id, role}` |
+| GET / PUT | `/api/v1/me/arbiter-key` | Read or register the public key buyers encrypt release secrets to (arbiters) |
+| GET | `/api/v1/escrows/:id/arbitration` | The arbiter fetches the sealed secret and hash to judge |
+| POST | `/api/v1/escrows/:id/arbitration/confirm` | The arbiter confirms they can open it |
+| POST | `/api/v1/escrows/:id/arbitration/decide` | The arbiter releases (with the opened secret) or refunds a disputed escrow |
 | GET / PUT / DELETE | `/api/v1/me/node` | Read, connect (address, TLS cert, invoice macaroon) or remove the seller's own Lightning node |
 | GET | `/health` | Health, including node connectivity and `server_time` |
 
@@ -157,6 +171,7 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Hardening 3: SQLite schema migrations (`PRAGMA user_version`), open-offer links (no buyer id needed; the first user to accept becomes the buyer)
 - [x] Extras: WebLN one-click payment, camera scan of the release QR, PostgreSQL store (`DATABASE_URL`)
 - [x] Sellers bring their own node (non-goal lifted): per-seller node directory, encrypted credentials, `/api/v1/me/node`, "My node" page, second regtest seller node
+- [x] Arbitration (non-goal lifted): optional arbiter per escrow, buyer's secret sealed to them in the browser, confirmation, release-or-refund decision on the record
 - [ ] Demo rehearsal and choosing the lead use case
 
 ## Open questions

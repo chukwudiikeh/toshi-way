@@ -11,17 +11,21 @@ import { Button, Card, Field, inputClass, Notice, Spinner } from "./ui";
 
 type Values = {
   buyer_id: string;
+  arbiter_id: string;
   amount_sats: string;
   description: string;
   hold_amount: string;
   hold_unit: "minutes" | "hours";
 };
 
-const initial: Values = { buyer_id: "", amount_sats: "", description: "", hold_amount: "1", hold_unit: "hours" };
+const initial: Values = { buyer_id: "", arbiter_id: "", amount_sats: "", description: "", hold_amount: "1", hold_unit: "hours" };
 
 // Server error codes that belong to a particular field.
 const fieldOfCode: Record<string, keyof Values> = {
   unknown_buyer: "buyer_id",
+  unknown_arbiter: "arbiter_id",
+  invalid_arbiter: "arbiter_id",
+  arbiter_has_no_key: "arbiter_id",
   invalid_amount: "amount_sats",
   invalid_description: "description",
   invalid_deadline: "hold_amount",
@@ -72,6 +76,10 @@ export function NewEscrow() {
         next[key] ??= issue.message;
       }
       setErrors(next);
+      return;
+    }
+    if (parsed.data.arbiter_id && parsed.data.arbiter_id === session?.userId) {
+      setErrors({ arbiter_id: "You can't be your own arbiter." });
       return;
     }
     if (parsed.data.buyer_id && parsed.data.buyer_id === session?.userId) {
@@ -127,6 +135,20 @@ export function NewEscrow() {
             <input
               value={values.buyer_id}
               onChange={(e) => set("buyer_id", e.target.value)}
+              className={`${inputClass} font-mono`}
+              placeholder="u_…"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </Field>
+          <Field
+            label="Arbiter's user id (optional)"
+            hint="Someone you and the buyer both trust to decide a dispute. Without one, a dispute is just flagged for the operator and the buyer's refund is the default. They must have set up a key on the Arbiter page."
+            error={errors.arbiter_id}
+          >
+            <input
+              value={values.arbiter_id}
+              onChange={(e) => set("arbiter_id", e.target.value)}
               className={`${inputClass} font-mono`}
               placeholder="u_…"
               autoComplete="off"

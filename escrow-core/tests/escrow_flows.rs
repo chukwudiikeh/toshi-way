@@ -6,7 +6,7 @@ use escrow_core::{
     mock::{MockDirectory, MockLightning},
     adapter::AdapterError,
     model::{Escrow, NodeInvoiceState, NodeKind, Preimage},
-    service::{EscrowService, NewEscrow, ServiceError},
+    service::{Decision, EscrowService, NewEscrow, ServiceError},
     state::EscrowState,
     store::MemoryStore,
     timing::{TimingConfig, TimingError},
@@ -38,6 +38,7 @@ fn offer(deadline_at: i64) -> NewEscrow {
     NewEscrow {
         buyer_id: Some("buyer".into()),
         seller_id: "seller".into(),
+        arbiter: None,
         amount_sats: 1000,
         description: "deliver the parcel".into(),
         deadline_at,
@@ -497,4 +498,157 @@ async fn one_sellers_node_going_down_does_not_affect_another_sellers_escrows() {
     alice_node.set_offline(false);
     svc.tick(T0 + HOUR + 2).await.unwrap();
     assert_eq!(svc.get(&a.id).await.unwrap().state, EscrowState::Refunded);
+}
+
+// --- Arbitration -------------------------------------------------------------------------------
+
+/// Stand-in for the buyer's secret encrypted to the arbiter: the right shape, opaque to the service.
+const SEALED: &str = "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3A=";
+
+fn arbitrated(buyer: Option<&str>) -> NewEscrow {
+    NewEscrow {
+        buyer_id: buyer.map(str::to_string),
+        arbiter: Some(("judge".into(), "judge-public-key".into())),
+        ..offer(T0 + HOUR)
+    }
+}
+
+/// Create an arbitrated escrow, accept it with a sealed secret, and lock it.
+async fn arbitrated_locked(f: &Fixture, p: &Preimage) -> Escrow {
+    let e = f.svc.create(arbitrated(Some("buyer")), T0).await.unwrap();
+    f.svc.accept_with(&e.id, p.hash(), "buyer", T0, Some(SEALED.into())).await.unwrap();
+    let ev = f.node.pay(&p.hash());
+    f.svc.apply_event(ev, T0 + 5).await.unwrap();
+    f.svc.get(&e.id).await.unwrap()
+}
+
+#[tokio::test]
+async fn an_arbitrated_escrow_needs_the_sealed_secret_and_no_other_does() {
+    let f = fixture();
+    let e = f.svc.create(arbitrated(Some("buyer")), T0).await.unwrap();
+    assert_eq!((e.arbiter_id.as_deref(), e.arbiter_key.as_deref()), (Some("judge"), Some("judge-public-key")));
+
+    // Without it the escrow cannot be accepted, and no invoice is made.
+    let err = f.svc.accept(&e.id, secret(1).hash(), "buyer", T0).await.unwrap_err();
+    assert!(matches!(err, ServiceError::Invalid(_)), "{err}");
+    assert_eq!(f.node.state(&secret(1).hash()), None);
+    // Nonsense is refused too.
+    for bad in ["", "short", &"!".repeat(200), &"A".repeat(2000)] {
+        let err = f.svc.accept_with(&e.id, secret(1).hash(), "buyer", T0, Some(bad.to_string())).await.unwrap_err();
+        assert!(matches!(err, ServiceError::Invalid(_)), "{bad:.20}");
+    }
+
+    let e = f.svc.accept_with(&e.id, secret(1).hash(), "buyer", T0, Some(SEALED.into())).await.unwrap();
+    assert_eq!(e.arbiter_sealed.as_deref(), Some(SEALED));
+
+    // An escrow with no arbiter has nothing to seal the secret to.
+    let plain = f.svc.create(offer(T0 + HOUR), T0).await.unwrap();
+    let err = f.svc.accept_with(&plain.id, secret(2).hash(), "buyer", T0, Some(SEALED.into())).await.unwrap_err();
+    assert!(matches!(err, ServiceError::Invalid(_)));
+}
+
+#[tokio::test]
+async fn the_arbiter_cannot_be_a_party() {
+    let f = fixture();
+    let mut as_seller = arbitrated(Some("buyer"));
+    as_seller.arbiter = Some(("seller".into(), "k".into()));
+    assert!(matches!(f.svc.create(as_seller, T0).await, Err(ServiceError::Invalid(_))));
+    let mut as_buyer = arbitrated(Some("buyer"));
+    as_buyer.arbiter = Some(("buyer".into(), "k".into()));
+    assert!(matches!(f.svc.create(as_buyer, T0).await, Err(ServiceError::Invalid(_))));
+}
+
+#[tokio::test]
+async fn the_arbiter_confirms_once_and_only_the_arbiter_can() {
+    let f = fixture();
+    let p = secret(1);
+    let e = f.svc.create(arbitrated(Some("buyer")), T0).await.unwrap();
+    // Nothing to confirm before the buyer has sealed a secret.
+    assert!(matches!(f.svc.confirm_arbiter(&e.id, "judge", T0).await, Err(ServiceError::InvalidState { .. })));
+    f.svc.accept_with(&e.id, p.hash(), "buyer", T0, Some(SEALED.into())).await.unwrap();
+
+    for imposter in ["buyer", "seller", "stranger"] {
+        assert!(matches!(f.svc.confirm_arbiter(&e.id, imposter, T0 + 1).await, Err(ServiceError::Invalid(_))));
+    }
+    assert_eq!(f.svc.get(&e.id).await.unwrap().arbiter_confirmed_at, None);
+
+    let confirmed = f.svc.confirm_arbiter(&e.id, "judge", T0 + 2).await.unwrap();
+    assert_eq!((confirmed.state, confirmed.arbiter_confirmed_at), (EscrowState::InvoiceIssued, Some(T0 + 2)));
+    // Repeating is a no-op: same timestamp, one audit entry.
+    let again = f.svc.confirm_arbiter(&e.id, "judge", T0 + 9).await.unwrap();
+    assert_eq!(again.arbiter_confirmed_at, Some(T0 + 2));
+    let confirms = f.svc.audit_log(&e.id).await.unwrap().iter().filter(|a| a.action == "arbiter_confirm").count();
+    assert_eq!(confirms, 1);
+}
+
+#[tokio::test]
+async fn the_arbiter_can_release_a_disputed_escrow_to_the_seller() {
+    let f = fixture();
+    let p = secret(1);
+    let e = arbitrated_locked(&f, &p).await;
+    f.svc.dispute(&e.id, "seller", "buyer has the goods and will not release", T0 + 10).await.unwrap();
+
+    // A wrong secret changes nothing.
+    let wrong = f.svc.arbitrate(&e.id, "judge", Decision::Release(secret(9)), "", T0 + 20).await;
+    assert!(matches!(wrong, Err(ServiceError::WrongPreimage)));
+    assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Disputed);
+    let recorded = f.svc.audit_log(&e.id).await.unwrap().iter().filter(|a| a.action == "arbiter_decision").count();
+    assert_eq!(recorded, 0, "a rejected attempt leaves no decision on the record");
+
+    let done = f.svc.arbitrate(&e.id, "judge", Decision::Release(p), "delivery photo is genuine", T0 + 30).await.unwrap();
+    assert_eq!(done.state, EscrowState::Settled);
+    assert_eq!(f.node.state(&secret(1).hash()), Some(NodeInvoiceState::Settled));
+    let decisions: Vec<_> =
+        f.svc.audit_log(&e.id).await.unwrap().into_iter().filter(|a| a.action == "arbiter_decision").collect();
+    assert_eq!(decisions.len(), 1, "the decision is on record exactly once");
+    assert_eq!(decisions[0].actor, "judge");
+    assert!(
+        decisions[0].reason.contains("release to the seller") && decisions[0].reason.contains("delivery photo is genuine"),
+        "{}",
+        decisions[0].reason
+    );
+
+    // Deciding the same thing again does nothing more; deciding the opposite is refused.
+    assert!(f.svc.arbitrate(&e.id, "judge", Decision::Release(secret(1)), "", T0 + 40).await.is_ok());
+    assert_eq!(f.node.settle_calls(), 1);
+    assert!(matches!(f.svc.arbitrate(&e.id, "judge", Decision::Refund, "", T0 + 41).await, Err(ServiceError::InvalidState { .. })));
+}
+
+#[tokio::test]
+async fn the_arbiter_can_refund_a_disputed_escrow_to_the_buyer() {
+    let f = fixture();
+    let p = secret(1);
+    let e = arbitrated_locked(&f, &p).await;
+    f.svc.dispute(&e.id, "buyer", "nothing arrived", T0 + 10).await.unwrap();
+    let done = f.svc.arbitrate(&e.id, "judge", Decision::Refund, "no proof of delivery", T0 + 30).await.unwrap();
+    assert_eq!(done.state, EscrowState::Refunded);
+    assert_eq!(f.node.state(&p.hash()), Some(NodeInvoiceState::Canceled));
+    assert!(f.svc.arbitrate(&e.id, "judge", Decision::Refund, "", T0 + 31).await.is_ok(), "repeat is a no-op");
+    assert!(matches!(
+        f.svc.arbitrate(&e.id, "judge", Decision::Release(p), "", T0 + 32).await,
+        Err(ServiceError::InvalidState { .. })
+    ));
+}
+
+#[tokio::test]
+async fn only_the_arbiter_decides_and_only_a_disputed_escrow_before_the_deadline() {
+    let f = fixture();
+    let p = secret(1);
+    let e = arbitrated_locked(&f, &p).await;
+
+    // Not disputed yet: the arbiter has no say.
+    assert!(matches!(f.svc.arbitrate(&e.id, "judge", Decision::Refund, "", T0 + 10).await, Err(ServiceError::InvalidState { .. })));
+    f.svc.dispute(&e.id, "buyer", "late", T0 + 11).await.unwrap();
+
+    // Nobody else can decide, whatever they hold.
+    for imposter in ["buyer", "seller", "stranger"] {
+        assert!(matches!(f.svc.arbitrate(&e.id, imposter, Decision::Refund, "", T0 + 12).await, Err(ServiceError::Invalid(_))));
+        assert!(matches!(f.svc.arbitrate(&e.id, imposter, Decision::Release(secret(1)), "", T0 + 12).await, Err(ServiceError::Invalid(_))));
+    }
+    assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Disputed);
+
+    // At the deadline the hold cannot be extended: the arbiter is too late and the scheduler refunds.
+    assert!(matches!(f.svc.arbitrate(&e.id, "judge", Decision::Release(p), "", T0 + HOUR).await, Err(ServiceError::TooLate)));
+    f.svc.tick(T0 + HOUR).await.unwrap();
+    assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Refunded);
 }

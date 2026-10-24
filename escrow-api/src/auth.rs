@@ -35,6 +35,7 @@ pub fn new_user_id() -> String {
 pub enum Party {
     Buyer,
     Seller,
+    Arbiter,
     Operator,
 }
 
@@ -43,6 +44,7 @@ impl Party {
         match self {
             Self::Buyer => "buyer",
             Self::Seller => "seller",
+            Self::Arbiter => "arbiter",
             Self::Operator => "operator",
         }
     }
@@ -62,6 +64,8 @@ pub fn party_of(escrow: &Escrow, user: &User) -> Option<Party> {
         Some(Party::Buyer)
     } else if user.id == escrow.seller_id {
         Some(Party::Seller)
+    } else if escrow.arbiter_id.as_deref() == Some(user.id.as_str()) {
+        Some(Party::Arbiter)
     } else if user.role == Role::Operator {
         Some(Party::Operator)
     } else {
@@ -106,6 +110,10 @@ mod tests {
         Escrow {
             id: "e".into(),
             buyer_id: Some("b".into()),
+            arbiter_id: Some("j".into()),
+            arbiter_key: None,
+            arbiter_sealed: None,
+            arbiter_confirmed_at: None,
             node: escrow_core::model::NodeKind::Shared,
             seller_id: "s".into(),
             amount_sats: 1,
@@ -129,6 +137,7 @@ mod tests {
         let e = escrow();
         assert_eq!(party_of(&e, &user("b", Role::User)), Some(Party::Buyer));
         assert_eq!(party_of(&e, &user("s", Role::User)), Some(Party::Seller));
+        assert_eq!(party_of(&e, &user("j", Role::User)), Some(Party::Arbiter));
         assert_eq!(party_of(&e, &user("op", Role::Operator)), Some(Party::Operator));
         assert_eq!(party_of(&e, &user("x", Role::User)), None);
     }
