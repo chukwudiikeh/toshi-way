@@ -477,3 +477,40 @@ test("a fiat value is shown beside the sats, worked out once at creation, and ma
   await buyer.page.goto("/");
   await expect(buyer.page.getByText("≈ ₦4,875.00")).toBeVisible();
 });
+
+test("landing page: a visitor sees the pitch, makes an account from it without losing the token screen, and signing out returns to it", async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto("/");
+
+  // The pitch and every section are there for someone who is not signed in.
+  await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toBeVisible();
+  for (const heading of [
+    "Four steps, and nobody in the middle.",
+    "Built around what happens next.",
+    "Built so you don't have to trust us.",
+    "What it doesn't do, said plainly.",
+    "Start your first protected deal.",
+  ]) {
+    await expect(page.getByRole("heading", { name: heading })).toBeAttached();
+  }
+  // No app chrome on the landing page: it has its own navigation.
+  await expect(page.getByRole("link", { name: "My escrows" })).toHaveCount(0);
+
+  // The calls to action lead to the forms.
+  await page.getByRole("link", { name: "Get started" }).first().click();
+  await expect(page).toHaveURL(/#start$/);
+
+  // Making an account here signs you in at once, which swaps the page layout. The one-time screen that
+  // shows the token must survive that (it once didn't: the swap rebuilt the page and lost it).
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByText("Save your token now")).toBeVisible();
+  await page.getByLabel("I have saved my token somewhere safe").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toHaveCount(0);
+
+  // Signing out goes back to the landing page.
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toBeVisible();
+});

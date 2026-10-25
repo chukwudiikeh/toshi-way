@@ -483,6 +483,29 @@ Tried to test our hold timing on the real public signet with two LND nodes of ou
 
 ---
 
+## 22. A landing page, and opening the app from a Codespace
+
+**Landing page** (`web/components/landing/`). Signed-out visitors to `/` now get a designed landing page instead of two bare forms; signed-in people still get their escrows. Inspired by the structure of a polished crypto-escrow site (a product card in the hero, a "which side are you on" split, numbered steps, trust badges, a stat row, one closing call to action, a rich footer), but in our own identity and our own words: a dark hero with an amber Lightning glow and a faint grid, then light/dark-aware sections. Sections: hero with a live escrow card that cycles awaiting payment, locked and settled; paying vs getting paid; four steps; the three ways a deal ends (paid on handover, refunded automatically, decided by an arbiter); why you can trust it; honest limits; and the real create-account and sign-in forms as the closing call to action, then the footer.
+
+Decisions:
+- *Honest copy.* The stat row holds only verifiable facts (a 256-bit secret made in your browser, automatic refund at the deadline, a 6 hour maximum hold, the released payment landing on your node), not invented user counts or volume. A "what it doesn't do" section says plainly that releasing proves the buyer chose to release and not that the job was good, that holds are short, and that it runs on a test network with stand-in coins and has not been tried with real wallets. The hero says "no real money in it yet".
+- *No new dependencies, no third parties.* Inline SVG icons, system fonts, CSS-only animation. The cycling card respects `prefers-reduced-motion` (it then stays on "Funds locked"), as do the entrance animations and smooth scrolling.
+- *The shell steps aside.* The app was a narrow centred column with a header and footer. A new `AppShell` gives a signed-out visitor on `/` a full-width page with its own navigation and footer, and everyone else the app layout.
+
+**A bug the browser tests caught, and why it matters.** After the change, every one of the 11 browser tests failed at account creation: "Save your token now" never appeared. Creating an account signs you in immediately (so a closed tab can't lose it), which flipped the shell from the landing layout to the app layout. Those layouts wrapped the page in *different elements*, so React threw the home page away and rebuilt it, which erased its one-time "show the token" state. The token is shown once and cannot be recovered, so a visitor would have been signed in to an account whose token they had never seen. The fix is a wrapper that stays the same element in both modes, with only its classes and the optional header and footer around it changing; it is explained in a comment on `AppShell`. A dedicated browser test now covers the whole landing path (the pitch and every section, the calls to action, making an account from the landing and keeping the token screen, and signing out back to the landing).
+
+Smaller things the screenshots and dev tooling found: the closing section's white text was inherited by its white form cards, making their titles invisible; the headline left a single word on its own line (now balanced); Next 16's dev tooling flagged smooth scrolling without `data-scroll-behavior="smooth"` on `<html>`, and flagged the home page as dropped from rendering while the app decides whether anyone is signed in (the page now renders inside a placeholder in the landing's colour).
+
+**Opening the app from a Codespace.** The web page called the API at `127.0.0.1:3000`, which only works through VS Code's local port forwarding; in a browser tab it points at your own machine. Cross-origin calls to a second private forwarded port also fail. So the web app can now proxy the API and the demo wallet through its own port (`API_PROXY_TARGET`, with `NEXT_PUBLIC_API_URL=""`): the browser only ever talks to one origin, no other port has to be exposed, and there is no CORS. It is off unless that variable is set; `scripts/demo-env.sh up` sets it, tells the demo wallet to accept the forwarded address, and prints the browser URL.
+
+**Environment note.** The Codespace restarted again and the Docker containers came back corrupted ("RWLayer ... is unexpectedly nil"), as before. Wiping and rebuilding the regtest network fixed it; that is the only reliable recovery.
+
+**Verified.** Lint, build and 96 unit tests pass. All 12 browser tests and the 3-scene demo rehearsal pass. The page was checked in screenshots at desktop and phone width, in light and dark.
+
+**Not done.** No real product screenshots or illustrations beyond the sample card; the landing is a single page with no separate pricing or docs pages; and the in-app pages (new escrow, the escrow page, node and arbiter setup) are untouched and could use the same design pass.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
