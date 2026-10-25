@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { clearSession, useSession } from "@/lib/session";
@@ -35,10 +36,12 @@ const statusText = {
 export function Header() {
   const session = useSession();
   const node = useNodeStatus();
+  // On the dashboard the page is wider, so the header lines up with it.
+  const wide = usePathname() === "/";
 
   return (
     <header className="border-b border-neutral-200 bg-white/80 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
-      <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+      <div className={`mx-auto flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 ${wide ? "max-w-6xl sm:px-6" : "max-w-3xl"}`}>
         <Link href="/" className="flex items-center gap-2 font-bold tracking-tight">
           <span className="grid size-7 place-items-center rounded-md bg-amber-500 text-sm text-black">⚡</span>
           toshi-way
@@ -47,7 +50,7 @@ export function Header() {
           {session?.kind === "user" && (
             <>
               <Link href="/" className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800">
-                My escrows
+                Dashboard
               </Link>
               <Link
                 href="/escrows/new"
