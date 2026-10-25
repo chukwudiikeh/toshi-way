@@ -7,6 +7,8 @@
 //!   BIND             listen address (default 127.0.0.1:3000)
 //!   SHARED_NODE      "off" to require every seller to bring their own node (default "on")
 //!   NODE_CREDENTIAL_KEY  64 hex characters (openssl rand -hex 32); enables sellers' own nodes
+//!   FIAT_PROVIDER    off (default), coingecko, mempool, or fixed:USD=65000,NGN=97500000 (demo rates)
+//!                    Shows an approximate fiat value next to amounts, taken once at creation. Display only.
 //!   RATE_LIMIT_PER_MIN       requests per minute per caller (default 120)
 //!   REGISTER_LIMIT_PER_MIN   account registrations per minute per address (default 10; raise it for a demo
 //!                            where many people share one network address)
@@ -133,7 +135,14 @@ where
             .collect(),
         ..ApiConfig::default()
     };
-    let state = AppState::new(service.clone(), store, config, Arc::new(runner::unix_now));
+    let rates = escrow_api::rates::from_setting(&env("FIAT_PROVIDER", Some("off"))).unwrap_or_else(|e| {
+        eprintln!("FIAT_PROVIDER: {e}");
+        std::process::exit(2);
+    });
+    if !rates.currencies().is_empty() {
+        tracing::info!(source = %rates.name(), currencies = rates.currencies().len(), "fiat values on (display only)");
+    }
+    let state = AppState::new(service.clone(), store, config, Arc::new(runner::unix_now)).with_rates(rates);
     let app = router(state);
 
     // Keep escrows in step with the node, and cancel holds at their deadline.

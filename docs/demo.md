@@ -42,7 +42,8 @@ A small "Demo wallet · regtest" label sits in the corner. It is a stand-in for 
 
 ## Scene 1: paid on handover (~3 min)
 
-1. **Courier window.** *New escrow.* Leave the buyer empty. Description `Parcel #4821 to Lekki, Lagos`, amount `5000`, hold `30` minutes. **Create escrow.**
+1. **Courier window.** *New escrow.* Leave the buyer empty. Description `Parcel #4821 to Lekki, Lagos`, amount `5000`, hold `30` minutes. Under **Also show the value in**, choose **NGN**: the form previews `≈ ₦4,875.00`. **Create escrow.**
+   - Point out: the escrow is still **5,000 sats**; the naira line says *when offered* and *display only*. "The price of bitcoin moves, so this is a snapshot taken when the offer was made, and it never changes. The sats are the truth." (On this network the rate is a labelled *demo rate*.)
    - Point out: **Funds go to: The seller's own node.** "The courier connected their own node, so when this settles the sats land with them."
    - "I left the buyer empty, so this page is a link I can send to the customer."
 2. **Customer window.** Open that link (paste the URL). **Accept offer.** "Their browser just made a secret and sent only its *hash* to the server. The secret never leaves this device."
@@ -87,6 +88,7 @@ A small "Demo wallet · regtest" label sits in the corner. It is a stand-in for 
 - **The buyer holds the power** in the plain version. They can withhold the secret even after receiving the goods; the cost to them is nothing but the refund. Delivery, where the recipient must be present, and an arbiter are the mitigations.
 - **An arbiter is someone you trust**: they can open the secret, so a dishonest one could leak it. The product doesn't pick or pay arbiters.
 - **Revealing the secret shows the buyer chose to release, not that the work was good.**
+- **The fiat value is a snapshot**, taken when the offer was made. Over a long hold the price will have moved.
 - **Holds are capped at 6 hours** by how long Lightning can safely hold a payment.
 - **The courier needs a Lightning node that supports hold invoices.** Sellers without one use the service's shared node, which means the service receives their sats and owes them: that is labelled *custodial* on screen, and can be switched off.
 
@@ -97,7 +99,7 @@ A small "Demo wallet · regtest" label sits in the corner. It is a stand-in for 
 - **"What if the courier's node is offline when the customer releases?"** The release can't settle and the customer is refunded at the deadline. This is the risk to flag to couriers.
 - **"Can the arbiter steal it?"** They can only choose pay-courier or refund-customer; they can't send it anywhere else. Their only real power is to leak the secret.
 - **"Why not just use escrow.com?"** Fees, custody, and they can freeze it. Here a lock on the network does the holding.
-- **"Why isn't there a fiat price?"** Out of scope for now; amounts are in sats.
+- **"Is that naira value real?"** On this demo network it is a fixed, labelled *demo rate*. Against a live feed it is the market price at the moment the offer was made, locked and shown as display only: the escrow itself is always in sats, and a naira price never decides anything.
 
 ## If something goes wrong
 

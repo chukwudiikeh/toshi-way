@@ -8,6 +8,7 @@ use axum::{
 };
 use escrow_core::{
     adapter::{NodeConnectError, NodeCredentials, NodeDirectory, NodeSummary},
+    fiat::{self, FiatQuote},
     model::{Escrow, PaymentHash, Preimage, Role, User},
     service::{Decision, NewEscrow},
     state::EscrowState,
@@ -19,6 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     arbiter,
+    rates::RateError,
     auth::{hash_token, is_prospective_buyer, new_token, new_user_id, party_of, Auth, Party},
     error::ApiError,
     AppState,
@@ -70,6 +72,15 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
         "arbiter_fingerprint": e.arbiter_key.as_deref().and_then(arbiter::fingerprint),
         "arbiter_sealed": e.arbiter_sealed.is_some(),
         "arbiter_confirmed_at": e.arbiter_confirmed_at,
+        // What the sum was worth when the offer was made, for display only. Locked at creation.
+        "fiat": e.fiat.as_ref().map(|f| json!({
+            "currency": f.currency,
+            "exponent": fiat::exponent(&f.currency),
+            "amount_minor": f.amount_minor,
+            "rate_minor_per_btc": f.rate_minor_per_btc,
+            "quoted_at": f.quoted_at,
+            "source": f.source,
+        })),
     })
 }
 
@@ -135,6 +146,10 @@ pub struct CreateReq {
     /// A trusted third party who decides if there is a dispute. They must have registered a key.
     #[serde(default)]
     arbiter_id: Option<String>,
+    /// Show the amount in this currency too (display only; the escrow is still in sats). The rate
+    /// is taken now and locked.
+    #[serde(default)]
+    fiat_currency: Option<String>,
     amount_sats: u64,
     description: String,
     /// Seconds from now until the settle-by deadline.
@@ -197,13 +212,30 @@ where
         }
     };
 
+    // A display-only fiat value. If the user asked for one and we cannot give it, say so rather than
+    // quietly dropping it; it never affects the escrow itself.
+    let now = (st.now)();
+    let fiat_currency = req.fiat_currency.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let fiat = match fiat_currency {
+        None => None,
+        Some(code) => {
+            let code = fiat::normalize(code)
+                .ok_or_else(|| ApiError::bad_request("unsupported_currency", format!("'{code}' is not a supported currency")))?;
+            let rate = st.rates.rate(&code, now).await.map_err(rate_error)?;
+            let quote = FiatQuote::new(req.amount_sats, &code, rate.rate_minor_per_btc, rate.as_of, &rate.source)
+                .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "rate_unavailable", e.to_string()))?;
+            Some(quote)
+        }
+    };
+
     // Idempotency-Key: a repeated create returns the first result instead of a second escrow.
     let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body_hash = hex::encode(Sha256::digest(
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             buyer_id.as_deref().unwrap_or(""),
             arbiter_id.as_deref().unwrap_or(""),
+            fiat.as_ref().map(|f| f.currency.as_str()).unwrap_or(""),
             req.amount_sats,
             req.description,
             req.hold_secs
@@ -227,7 +259,6 @@ where
         }
     }
 
-    let now = (st.now)();
     let escrow = st
         .service
         .create(
@@ -236,6 +267,7 @@ where
                 seller_id: user.id.clone(),
                 arbiter,
                 amount_sats: req.amount_sats,
+                fiat,
                 description: req.description,
                 deadline_at: now.saturating_add(req.hold_secs),
             },
@@ -697,4 +729,57 @@ where
     };
     let escrow = st.service.arbitrate(&id, &user.id, decision, &note, (st.now)()).await?;
     Ok(Json(escrow_view(&escrow, Party::Arbiter)))
+}
+
+// --- Fiat display rates -----------------------------------------------------------------------
+
+fn rate_error(e: RateError) -> ApiError {
+    match e {
+        RateError::Disabled => ApiError::bad_request("fiat_disabled", "this server does not show fiat values"),
+        RateError::Unsupported(c) => {
+            ApiError::bad_request("unsupported_currency", format!("'{c}' is not offered by this server's price feed"))
+        }
+        RateError::Unavailable => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rate_unavailable",
+            "the price feed is unavailable right now; try again, or leave the fiat value out",
+        ),
+    }
+}
+
+/// Whether fiat values are on, where the price comes from, and which currencies are offered.
+pub async fn rates_list<A, S>(State(st): State<AppState<A, S>>, Auth(_user): Auth) -> Json<Value>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let currencies: Vec<Value> = st
+        .rates
+        .currencies()
+        .into_iter()
+        .filter_map(|c| fiat::exponent(&c).map(|e| json!({ "code": c, "exponent": e })))
+        .collect();
+    Json(json!({ "enabled": !currencies.is_empty(), "source": st.rates.name(), "currencies": currencies }))
+}
+
+/// The current price of one bitcoin in a currency, so the form can preview a value before creating.
+pub async fn rates_one<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(_user): Auth,
+    Path(currency): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let code = fiat::normalize(&currency)
+        .ok_or_else(|| ApiError::bad_request("unsupported_currency", format!("'{currency}' is not a supported currency")))?;
+    let rate = st.rates.rate(&code, (st.now)()).await.map_err(rate_error)?;
+    Ok(Json(json!({
+        "currency": code,
+        "exponent": fiat::exponent(&code),
+        "rate_minor_per_btc": rate.rate_minor_per_btc,
+        "quoted_at": rate.as_of,
+        "source": rate.source,
+    })))
 }

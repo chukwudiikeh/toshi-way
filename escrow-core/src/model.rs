@@ -4,7 +4,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use crate::state::EscrowState;
+use crate::{fiat::FiatQuote, state::EscrowState};
 
 pub type PaymentHash = [u8; 32];
 
@@ -115,6 +115,9 @@ pub struct Escrow {
     /// settings later cannot strand an escrow that is in flight.
     pub node: NodeKind,
     pub amount_sats: u64,
+    /// What the sum was worth in a fiat currency when the offer was made. Display only: nothing in
+    /// the escrow logic reads it, and it never changes after creation.
+    pub fiat: Option<FiatQuote>,
     pub description: String,
     pub payment_hash: Option<PaymentHash>,
     /// The BOLT11 string the buyer pays. Not for ordinary logs or public responses.

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, describeError } from "@/lib/api";
 import { formatLocalTime, formatSats } from "@/lib/clock";
+import { formatFiat } from "@/lib/fiat";
 import type { Escrow, NewUser } from "@/lib/schemas";
 import { rememberUserId, useSession, type Session } from "@/lib/session";
 import { CreateAccount, SignIn, TokenReveal } from "./Account";
@@ -135,6 +136,11 @@ function MyEscrows({ session }: { session: Session }) {
                   </div>
                 </div>
                 <div className="font-mono text-sm tabular-nums">{formatSats(e.amount_sats)}</div>
+                {e.fiat && (
+                  <div className="text-xs text-neutral-500" title="Value when the offer was made. Display only.">
+                    ≈ {formatFiat(e.fiat.amount_minor, e.fiat.currency, e.fiat.exponent)}
+                  </div>
+                )}
                 <StateBadge state={e.state} />
               </Link>
             </li>
