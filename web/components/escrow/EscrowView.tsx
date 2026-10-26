@@ -11,6 +11,7 @@ import { CreateAccount, SignIn, TokenReveal } from "../Account";
 import { Card, Notice, Spinner } from "../ui";
 import { DetailsCard, EscrowHeader, PeopleCard, Progress, TechnicalCard, Terms, YourMove } from "./EscrowSummary";
 import { useEscrow, useEvents } from "./hooks";
+import { BackupReminder } from "../BackupCard";
 import { EscrowPanel } from "./panels";
 import { Timeline } from "./Timeline";
 
@@ -108,6 +109,7 @@ function Loaded({ id, linkSecret }: { id: string; linkSecret: string | null }) {
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0 space-y-6">
           <YourMove escrow={escrow} />
+          <BackupReminder />
           <EscrowPanel escrow={escrow} setEscrow={setEscrow} refresh={refresh} linkSecret={linkSecret} events={events} />
           <Terms escrow={escrow} />
           <Timeline events={events} escrow={escrow} />
