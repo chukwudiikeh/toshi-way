@@ -7,6 +7,8 @@ import type { ArbiterKey } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
 import { BackupReminder } from "./BackupCard";
+import { ScaleIcon } from "./landing/icons";
+import { PageHeader, StatusPanel } from "./PageParts";
 import { Button, Card, CopyField, Field, inputClass, Notice, Spinner } from "./ui";
 
 /**
@@ -90,45 +92,55 @@ export function ArbiterSetup() {
   return (
     <div className="space-y-6">
       <BackupReminder />
-      <div>
-        <h1 className="text-xl font-bold">Act as an arbiter</h1>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          An arbiter is someone a seller and buyer both trust to decide a dispute. When a buyer starts an escrow that
-          names you, their release secret is encrypted so that only you can open it. If there is a dispute you
-          decide: pay the seller, or refund the buyer. Nobody else, including this service, can open it.
-        </p>
-      </div>
+      <PageHeader icon={<ScaleIcon className="size-5" />} title="Act as an arbiter">
+        An arbiter is someone a seller and buyer both trust to decide a dispute. When a buyer starts an escrow that
+        names you, their release secret is encrypted so that only you can open it. If there is a dispute you
+        decide: pay the seller, or refund the buyer. Nobody else, including this service, can open it.
+      </PageHeader>
 
       {message && <Notice tone="info">{message}</Notice>}
 
       {fp ? (
-        <Card title="Your arbiter key">
-          <div className="space-y-4">
-            <div>
-              <div className="text-sm font-medium">Key fingerprint</div>
-              <div className="break-words font-mono text-sm">{fp}</div>
-              <p className="mt-1 text-xs text-neutral-500">
-                Tell sellers and buyers this out of band. Before they trust an escrow, they compare it with the one
-                they see on the escrow page, which makes sure nobody swapped your key.
-              </p>
-            </div>
-            <div>
-              <div className="text-sm font-medium">Your user id (give this to sellers)</div>
-              <CopyField value={session.userId ?? ""} />
-            </div>
+        <>
+          <StatusPanel
+            tone={haveLocal === false ? "warn" : "good"}
+            label={haveLocal === false ? "Key missing on this device" : "Ready to decide"}
+          >
             {haveLocal === false && (
-              <Notice tone="error">
+              <p>
                 This browser does not have the private key for this fingerprint, so you can&apos;t decide escrows
                 from here. Restore your backup below.
-              </Notice>
+              </p>
             )}
             {haveLocal && (
-              <Notice tone="success">The private key is on this device. Back it up so a cleared browser doesn&apos;t lock you out.</Notice>
+              <p>The private key is on this device. Back it up so a cleared browser doesn&apos;t lock you out.</p>
             )}
-          </div>
-        </Card>
+          </StatusPanel>
+          <Card title="Your arbiter key">
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">Key fingerprint</div>
+                <div className="mt-2 break-words rounded-lg bg-neutral-100 p-3 font-mono text-sm dark:bg-neutral-800">{fp}</div>
+                <p className="mt-2 text-xs text-neutral-500">
+                  Tell sellers and buyers this out of band. Before they trust an escrow, they compare it with the one
+                  they see on the escrow page, which makes sure nobody swapped your key.
+                </p>
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                  Your user id (give this to sellers)
+                </div>
+                <div className="mt-2">
+                  <CopyField value={session.userId ?? ""} />
+                </div>
+              </div>
+            </div>
+          </Card>
+        </>
       ) : (
-        <Notice tone="info">You haven&apos;t set up a key yet, so nobody can name you as their arbiter.</Notice>
+        <StatusPanel tone="idle" label="No key yet">
+          <p>You haven&apos;t set up a key yet, so nobody can name you as their arbiter.</p>
+        </StatusPanel>
       )}
 
       <Card title={fp ? "Make a new key" : "Make your key"}>
