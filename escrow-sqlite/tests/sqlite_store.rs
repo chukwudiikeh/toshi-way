@@ -19,6 +19,11 @@ async fn sqlite_store_meets_the_store_contract() {
 }
 
 #[tokio::test]
+async fn sqlite_store_lists_a_long_history_and_totals_all_of_it() {
+    escrow_core::testing::history_contract(&SqliteStore::in_memory().await.unwrap()).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_meets_the_user_store_contract() {
     escrow_core::testing::user_store_contract(&SqliteStore::in_memory().await.unwrap()).await;
 }

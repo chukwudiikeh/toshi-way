@@ -281,7 +281,7 @@ where
     Ok((StatusCode::CREATED, Json(view)))
 }
 
-/// The caller's own escrows, as buyer or seller.
+/// The caller's own escrows (everything in play and the newest that have ended), with totals over all of them.
 pub async fn list_mine<A, S>(
     State(st): State<AppState<A, S>>,
     Auth(user): Auth,
@@ -297,7 +297,16 @@ where
         .iter()
         .filter_map(|e| party_of(e, &user).map(|p| escrow_view(e, p)))
         .collect();
-    Ok(Json(json!({ "escrows": list })))
+    // Totals cover the whole history, so they stay right when there are more escrows than the list holds.
+    let t = st.service.totals_for_user(&user.id).await?;
+    Ok(Json(json!({
+        "escrows": list,
+        "totals": {
+            "escrows": t.escrows,
+            "settled": { "count": t.settled_count, "received": t.settled_received, "paid": t.settled_paid },
+            "refunded": { "count": t.refunded_count, "sats": t.refunded_sats },
+        },
+    })))
 }
 
 pub async fn get_escrow<A, S>(

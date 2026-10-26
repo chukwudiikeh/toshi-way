@@ -33,6 +33,21 @@ pub struct EscrowUpdate {
     pub invoice_expires_at: Option<i64>,
 }
 
+/// What a user's whole history adds up to. Money counts only where they are the buyer or the seller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserTotals {
+    /// Every escrow they are a party to, in any role and state.
+    pub escrows: u64,
+    pub settled_count: u64,
+    /// Sats of settled escrows where they are the seller.
+    pub settled_received: u64,
+    /// Sats of settled escrows where they are the buyer.
+    pub settled_paid: u64,
+    pub refunded_count: u64,
+    /// Sats of refunded escrows where they are the buyer or the seller.
+    pub refunded_sats: u64,
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn insert(&self, escrow: Escrow) -> Result<(), StoreError>;
@@ -40,8 +55,12 @@ pub trait Store: Send + Sync {
     async fn get_by_hash(&self, hash: &PaymentHash) -> Result<Option<Escrow>, StoreError>;
     /// Escrows that are not in a terminal state.
     async fn list_active(&self) -> Result<Vec<Escrow>, StoreError>;
-    /// Escrows where `user_id` is the buyer, the seller or the arbiter, newest first (ties by id), at most 100.
+    /// Escrows where `user_id` is the buyer, the seller or the arbiter, newest first (ties by id): every
+    /// one that is still in play, plus the newest 100 that have ended. `totals_for_user` covers the rest.
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError>;
+    /// Counts and sums over all of `user_id`'s escrows, however old, so totals do not depend on how many
+    /// escrows `list_for_user` returns.
+    async fn totals_for_user(&self, user_id: &str) -> Result<UserTotals, StoreError>;
     /// Atomically move `id` from `expected` to `audit.to_state`, apply `update`, and append
     /// `audit`. Fails with `Conflict` if the escrow is no longer in `expected`.
     async fn transition(
@@ -148,8 +167,47 @@ impl Store for MemoryStore {
             .cloned()
             .collect();
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
-        list.truncate(100);
+        let mut ended = 0;
+        list.retain(|e| {
+            if !e.state.is_terminal() {
+                return true;
+            }
+            ended += 1;
+            ended <= 100
+        });
         Ok(list)
+    }
+
+    async fn totals_for_user(&self, user_id: &str) -> Result<UserTotals, StoreError> {
+        let inner = self.inner.lock().unwrap();
+        let mut t = UserTotals::default();
+        for e in inner.escrows.iter() {
+            let buyer = e.buyer_id.as_deref() == Some(user_id);
+            let seller = e.seller_id == user_id;
+            if !(buyer || seller || e.arbiter_id.as_deref() == Some(user_id)) {
+                continue;
+            }
+            t.escrows += 1;
+            match e.state {
+                EscrowState::Settled => {
+                    t.settled_count += 1;
+                    if seller {
+                        t.settled_received += e.amount_sats;
+                    }
+                    if buyer {
+                        t.settled_paid += e.amount_sats;
+                    }
+                }
+                EscrowState::Refunded => {
+                    t.refunded_count += 1;
+                    if buyer || seller {
+                        t.refunded_sats += e.amount_sats;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(t)
     }
 
     async fn transition(
@@ -236,6 +294,9 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
         (**self).list_for_user(user_id).await
+    }
+    async fn totals_for_user(&self, user_id: &str) -> Result<UserTotals, StoreError> {
+        (**self).totals_for_user(user_id).await
     }
     async fn transition(
         &self,

@@ -71,7 +71,15 @@ export const Escrow = z.object({
 });
 export type Escrow = z.infer<typeof Escrow>;
 
-export const EscrowList = z.object({ escrows: z.array(Escrow) });
+/** Counts and sums over a person's whole history, which can be longer than the list the server sends. */
+export const Totals = z.object({
+  escrows: z.number(),
+  settled: z.object({ count: z.number(), received: z.number(), paid: z.number() }),
+  refunded: z.object({ count: z.number(), sats: z.number() }),
+});
+export type Totals = z.infer<typeof Totals>;
+
+export const EscrowList = z.object({ escrows: z.array(Escrow), totals: Totals.optional() });
 
 export const AuditEntry = z.object({
   actor: z.string(),

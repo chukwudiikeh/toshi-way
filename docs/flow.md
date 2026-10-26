@@ -264,7 +264,7 @@ Run it: `OPERATOR_TOKEN=<24+ chars> ./target/debug/toshi-server &` then `OPERATO
 Preparing the API for a browser app, and starting `web/`.
 
 - **CORS** (`escrow-api`): `ApiConfig.cors_origins` is an allow-list of browser origins, set with `CORS_ORIGINS` (default `http://localhost:3001,http://127.0.0.1:3001`; the API is on 3000, so the frontend runs on 3001). The layer is outermost, so preflight `OPTIONS` requests are answered before authentication and rate limiting. Allowed headers: `Authorization`, `Content-Type`, `Idempotency-Key`; exposed to the page: `x-request-id`, `Retry-After`. A test checks an allowed origin gets the headers and an unlisted one gets none.
-- **`GET /api/v1/escrows`**: the caller's own escrows as buyer or seller, newest first, at most 100. Without it a user had no way to find an escrow they had been invited to. Needed a new `Store::list_for_user` (in-memory and SQLite, with indexes on buyer and seller, covered by the shared store contract test). Operators are never parties, so they still use `/api/v1/operator/escrows`.
+- **`GET /api/v1/escrows`**: the caller's own escrows as buyer or seller, newest first (at first at most 100; see section 27 for what it returns now). Without it a user had no way to find an escrow they had been invited to. Needed a new `Store::list_for_user` (in-memory and SQLite, with indexes on buyer and seller, covered by the shared store contract test). Operators are never parties, so they still use `/api/v1/operator/escrows`.
 - **`invoice_expires_at`** is now in the escrow view so the UI can count down an unpaid invoice. The invoice itself is still only returned by `/invoice`, to the buyer.
 - **Scaffold**: `web/` created with `create-next-app` (Next.js 16, React 19, Tailwind 4, TypeScript, ESLint, App Router). It is still the stock template; no feature code yet. `node_modules` and `.next` are gitignored.
 
@@ -527,7 +527,7 @@ Signing in used to land on a plain list of escrows. It now lands on a dashboard 
 **Verified.** 113 unit tests (17 new), build, lint, and 13 browser tests (one new, covering an empty account, an offer being the buyer's move and not the seller's, accepting and paying turning it into a locked escrow with a move for each side, the stat figures, the tabs and opening a row). The 3-scene rehearsal passes. Checked in screenshots at desktop and phone width, light and dark, with a seeded mix of states and with a brand-new account.
 
 **Limits.**
-- The list endpoint returns at most the newest 100 escrows, so the totals ("Completed", "Received 26,000 sats") are over those 100. A server-side summary endpoint would fix that for heavy users.
+- ~~The totals were over only the newest 100 escrows.~~ Fixed: see section 27.
 - Operators still get the small card with a link to their queue, not a dashboard of their own.
 - Polling rather than push, and no search box yet.
 
@@ -591,6 +591,20 @@ A token gets you into your account on any device, but two things are made in the
 **Limits.** The file is only as safe as its password and wherever it is kept; a weak password is rejected (same rule as the account password). "Backed up" means the file was downloaded, not that it still exists. Backups are a snapshot: a secret made afterwards needs a new backup, which is what the reminder is for.
 
 **Verified.** 5 unit tests (collecting, round trip, wrong password, bad file, no overwrite and the pending count) and a browser test: a buyer accepts, sees the reminder, downloads the file (which contains neither the secret nor the token), then on a second browser signs in with the token, fails with a wrong backup password, restores with the right one, and has the same secret.
+
+---
+
+## 27. Dashboard totals over the whole history
+
+The list endpoint used to return at most the newest 100 escrows, and the dashboard added up its Settled and Refunded cards from that list. Past 100 escrows the totals were quietly too small.
+
+**What changed.**
+- `GET /api/v1/escrows` now returns every escrow still in play, plus the newest 100 that have ended (`list_for_user`). So "Needs you", "Active" and "Locked now" are always exact: an old escrow that is still open is never cut off.
+- The same response carries `totals` over the person's whole history: `escrows` (all, in any role), `settled` (count, sats received as seller, sats paid as buyer) and `refunded` (count, sats as buyer or seller). They come from one SQL aggregate (`totals_for_user`) in the memory, SQLite and Postgres stores, so nothing has to load the whole history.
+- The dashboard uses the server's totals for the Settled and Refunded cards. When there are more escrows than the list holds, a line above the table says "Showing N of your M escrows". Money still counts only where the person is the buyer or the seller; an arbiter's escrows count in the number of escrows but not in the sats.
+- `totals` is optional in the web schema, so an older server still works (the cards then add up the list, as before).
+
+**Verified.** A store contract test (`history_contract`) runs on all three stores: 2 open, 70 settled and 40 refunded as buyer, 3 settled as seller and 1 as arbiter only. It checks the list holds the 2 open plus the newest 100 ended, in order, and the totals are exact (116 escrows, 74 settled, 40 refunded, the right sats). SQLite and memory run by default; Postgres runs with the others when its container is up (`--ignored --test-threads=1`, since those tests share one database). A web test covers the dashboard taking the server's totals. The live API returns the new field.
 
 ---
 

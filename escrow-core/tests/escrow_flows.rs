@@ -375,6 +375,11 @@ async fn memory_store_meets_the_store_contract() {
 }
 
 #[tokio::test]
+async fn memory_store_lists_a_long_history_and_totals_all_of_it() {
+    escrow_core::testing::history_contract(&MemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn memory_store_meets_the_user_store_contract() {
     escrow_core::testing::user_store_contract(&MemoryStore::new()).await;
 }
