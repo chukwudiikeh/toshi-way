@@ -35,7 +35,10 @@ async function signedIn(browser: Browser, who: keyof Cast, viewport?: { width: n
   const context = await browser.newContext(viewport ? { viewport } : {});
   const page = await context.newPage();
   await page.goto("/");
-  await page.getByLabel("Token").fill(cast[who].token);
+  await page.getByLabel("Token", { exact: true }).fill(cast[who].token);
+  const password = "rehearsal password 123";
+  await page.getByLabel("New password for this device", { exact: true }).fill(password);
+  await page.getByLabel("Confirm the new password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
   return { page, context };

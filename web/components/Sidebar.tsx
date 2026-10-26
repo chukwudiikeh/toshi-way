@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
-import { clearSession, useSession } from "@/lib/session";
+import { clearSession, useSession, useVaultState } from "@/lib/session";
 import { BoltIcon, KeyIcon, ScaleIcon, ShieldIcon } from "./landing/icons";
 
 type NodeStatus = "up" | "down" | "unreachable" | null;
@@ -72,6 +72,7 @@ function NavLink({ href, icon, children, onClick }: { href: string; icon: ReactN
  */
 export function Sidebar() {
   const session = useSession();
+  const vault = useVaultState();
   const node = useNodeStatus();
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
@@ -131,6 +132,7 @@ export function Sidebar() {
                     <NavLink href="/escrows/new" icon={<BoltIcon />} onClick={close}>New escrow</NavLink>
                     <NavLink href="/node" icon={<KeyIcon />} onClick={close}>My node</NavLink>
                     <NavLink href="/arbiter" icon={<ScaleIcon />} onClick={close}>Arbiter</NavLink>
+                    <NavLink href="/account" icon={<ShieldIcon />} onClick={close}>Account</NavLink>
                   </>
                 )}
                 {session.kind === "operator" && (
@@ -153,7 +155,7 @@ export function Sidebar() {
               onClick={clearSession}
               className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-neutral-300 hover:bg-white/10 hover:text-white"
             >
-              Sign out
+              {vault === "unprotected" ? "Sign out" : "Lock"}
             </button>
           )}
         </div>
