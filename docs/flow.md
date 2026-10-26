@@ -608,6 +608,22 @@ The list endpoint used to return at most the newest 100 escrows, and the dashboa
 
 ---
 
+## 28. The sidebar and the two-step New Escrow form
+
+Both came from a redesign by the project owner (PR #8: `web/components/Sidebar.tsx`, `web/components/escrow/SidePicker.tsx`, `web/components/NewEscrow.tsx`, `web/components/AppShell.tsx`). Recorded here so the work log is complete.
+
+**The sidebar replaces the top header.** On wide screens it is a dark rail down the left; on a phone it becomes a top bar with a menu button that opens the same rail as a drawer. It holds the brand, a "Create escrow" button, the menu for the signed-in role (a user sees Dashboard, New escrow, My node, Arbiter and Account; an operator sees the operator queue), the node status ("Node online" and so on, checked every 15 seconds) and the Lock or Sign out button. A signed-out visitor on the home page still gets the landing page with its own navigation, so the sidebar steps aside there (see section 22). The dashboard's old header widget was removed.
+
+**New Escrow is two steps.**
+1. **Concept.** First, which side of the deal you are on: "I'm getting paid" (the seller makes an offer and sends a link) or "I'm paying" (open the link the seller sent, or give the seller your user id). A paying buyer sees a short panel for that and no form. A seller picks the kind of deal (P2P asset sale, Freelance / services, Cargo / goods shipment, Digital asset transfer), which fills in a deal title and a terms template to edit, and presses Continue.
+2. **Terms.** The amount, the hold time, the buyer's user id (left empty for an open-offer link), an optional arbiter and an optional display-only fiat currency, with a Back button to step 1. A progress bar shows which step you are on.
+
+**The title leads the description.** The form stores one description: the title on the first line and the terms after it. The dashboard and the escrow page show the first line as the title, and the escrow page puts the rest under "Terms" (section 24). If the server rejects the description, the form returns to step 1 so the fix is visible.
+
+**What did not change.** The server, the idempotency key per submission (a retry with the same values cannot create a second escrow) and the form's validation and error messages. The browser tests only needed their navigation updated.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
