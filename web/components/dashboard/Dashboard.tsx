@@ -9,7 +9,7 @@ import type { ArbiterKey, Escrow, NodeInfo } from "@/lib/schemas";
 import { rememberUserId, type Session } from "@/lib/session";
 import { Notice, Spinner } from "../ui";
 import { EscrowTable } from "./EscrowTable";
-import { AccountCard, Activity, ArbiterCard, Attention, GetStarted, NodeCard, StatCards } from "./Widgets";
+import { AccountCard, Activity, ArbiterCard, Attention, NodeCard, StatCards } from "./Widgets";
 
 /** What a signed-in buyer, seller or arbiter sees first: where things stand, and what needs them. */
 export function Dashboard({ session }: { session: Session }) {
@@ -55,8 +55,8 @@ export function Dashboard({ session }: { session: Session }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm text-neutral-500">{greeting(new Date().getHours())}</p>
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Dashboard</h1>
+          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">{greeting(new Date().getHours())}</h1>
+          <p className="mt-1 text-sm text-neutral-500">Where your escrows stand, and what needs you.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
@@ -83,7 +83,6 @@ export function Dashboard({ session }: { session: Session }) {
           <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
             <div className="min-w-0 space-y-6">
               <Attention items={attention} now={now} />
-              {escrows.length === 0 ? <GetStarted hasNode={node ? node.mode !== "none" : null} /> : null}
               <EscrowTable escrows={escrows} now={now} />
             </div>
             <aside className="min-w-0 space-y-4">

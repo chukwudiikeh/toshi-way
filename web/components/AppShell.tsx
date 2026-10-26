@@ -3,10 +3,11 @@
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useSession } from "@/lib/session";
-import { Header } from "./Header";
+import { BoltIcon } from "./landing/icons";
+import { Sidebar } from "./Sidebar";
 
 /**
- * The page chrome. Signed-in people (and every inner page) get the app header, a centred column
+ * The page chrome. Signed-in people (and every inner page) get the app sidebar, a centred column
  * and a footer. A signed-out visitor on the home page gets the landing page instead, which is
  * full-width and brings its own navigation and footer, so the chrome steps aside for it.
  */
@@ -23,27 +24,40 @@ export function AppShell({ children }: { children: ReactNode }) {
   // account signs you in at once, which flips this from the landing layout to the app layout; if
   // the page were rebuilt by that, the one-time "save your token" screen would be lost with it.
   // So only classes and the optional pieces around it change, never the element that holds it.
-  return (
-    <>
-      {landing ? null : <Header />}
-      <div
-        role={landing ? undefined : "main"}
-        className={
-          landing
-            ? "flex flex-1 flex-col bg-neutral-950"
-            : path === "/"
-              ? "mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
-              : "mx-auto w-full max-w-3xl flex-1 px-4 py-6 sm:py-10"
-        }
-      >
-        {children}
+  const footer = (
+    <footer className="bg-neutral-950 px-4 py-8 text-neutral-400 sm:px-8">
+      <div className="mx-auto flex max-w-6xl flex-col gap-3 text-xs sm:flex-row sm:items-center sm:justify-between">
+        <span className="flex items-center gap-2 font-semibold text-neutral-200">
+          <span className="grid size-6 place-items-center rounded-md bg-amber-500 text-black">
+            <BoltIcon className="size-3" />
+          </span>
+          toshi-way
+        </span>
+        <span>Runs on a test network. No real money.</span>
+        <span className="max-w-md">
+          The page only shows what the escrow server reports. Funds are held by the Lightning network, not by this
+          site.
+        </span>
       </div>
-      {landing ? null : (
-        <footer className="px-4 py-6 text-center text-xs text-neutral-500">
-          The page only shows what the escrow server reports. Funds are held by the Lightning network, not by
-          this site.
-        </footer>
-      )}
-    </>
+    </footer>
+  );
+
+  return (
+    <div className={`flex flex-1 ${landing ? "flex-col" : "flex-col lg:flex-row"}`}>
+      {landing ? null : <Sidebar />}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div
+          role={landing ? undefined : "main"}
+          className={
+            landing
+              ? "flex flex-1 flex-col bg-neutral-950"
+              : `mx-auto w-full flex-1 px-4 py-6 sm:px-8 sm:py-10 ${path === "/" ? "max-w-6xl" : "max-w-3xl"}`
+          }
+        >
+          {children}
+        </div>
+        {landing ? null : footer}
+      </div>
+    </div>
   );
 }
