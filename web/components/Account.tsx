@@ -5,6 +5,8 @@ import { api, ApiError, describeError } from "@/lib/api";
 import type { NewUser } from "@/lib/schemas";
 import { startAccount, unlock, useVaultHint, useVaultState } from "@/lib/session";
 import { VaultError } from "@/lib/vault";
+import { KeyIcon } from "./landing/icons";
+import { PageHeader } from "./PageParts";
 import { NewPasswordFields, useNewPassword } from "./PasswordFields";
 import { Button, Card, CopyField, Field, inputClass, Notice } from "./ui";
 
@@ -67,32 +69,37 @@ export function CreateAccount({ onCreated }: { onCreated: (user: NewUser) => voi
 export function TokenReveal({ user, onDone }: { user: NewUser; onDone: () => void }) {
   const [saved, setSaved] = useState(false);
   return (
-    <Card title="Save your token now" className="border-amber-400 dark:border-amber-700">
-      <div className="space-y-4">
-        <Notice tone="warn">
-          This token is your <strong>recovery key</strong>. You sign in on this device with your password, but you
-          need the token to sign in on another device, or if you forget your password.{" "}
-          <strong>Keep it somewhere safe, like a password manager.</strong> Anyone who has it can act as you.
-        </Notice>
-        <div className="space-y-1">
-          <div className="text-sm font-medium">Your token</div>
-          <CopyField value={user.token} />
-          <p className="text-xs text-neutral-500">You can see it again from the Account page, after entering your password.</p>
+    <div className="space-y-6">
+      <PageHeader icon={<KeyIcon className="size-5" />} title="Your account is ready">
+        One last thing before you start: keep your recovery key safe.
+      </PageHeader>
+      <Card title="Save your token now" className="border-2 border-amber-400 dark:border-amber-600">
+        <div className="space-y-5">
+          <Notice tone="warn">
+            This token is your <strong>recovery key</strong>. You sign in on this device with your password, but you
+            need the token to sign in on another device, or if you forget your password.{" "}
+            <strong>Keep it somewhere safe, like a password manager.</strong> Anyone who has it can act as you.
+          </Notice>
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">Your token</div>
+            <CopyField value={user.token} />
+            <p className="text-xs text-neutral-500">You can see it again from the Account page, after entering your password.</p>
+          </div>
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">Your user id</div>
+            <CopyField value={user.id} />
+            <p className="text-xs text-neutral-500">Not secret. Send it to a seller so they can make you an offer.</p>
+          </div>
+          <label className="flex items-center gap-3 rounded-lg border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+            <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} className="size-4" />
+            I have saved my token somewhere safe
+          </label>
+          <Button onClick={onDone} disabled={!saved} className="w-full sm:w-auto">
+            Continue
+          </Button>
         </div>
-        <div className="space-y-1">
-          <div className="text-sm font-medium">Your user id</div>
-          <CopyField value={user.id} />
-          <p className="text-xs text-neutral-500">Not secret. Send it to a seller so they can make you an offer.</p>
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} className="size-4" />
-          I have saved my token somewhere safe
-        </label>
-        <Button onClick={onDone} disabled={!saved}>
-          Continue
-        </Button>
-      </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 
