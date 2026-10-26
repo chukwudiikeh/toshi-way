@@ -533,6 +533,31 @@ Signing in used to land on a plain list of escrows. It now lands on a dashboard 
 
 ---
 
+## 24. The escrow page
+
+The page people spend the most time on was a flat list: a small title, a grid of facts, then one big card of prose, notices and actions. It now has structure (`web/components/escrow/EscrowSummary.tsx`, `web/lib/lifecycle.ts`).
+
+**What changed.**
+- **Header:** a back link to the dashboard, the title, your role, a short id, the status, and the amount large (with the locked fiat value beside it, same wording as before).
+- **Progress tracker:** Offer, Payment, Funds locked, Paid out. Steps are done, current or upcoming; a dispute is marked on the locked step; a settled deal ends in a green "Seller paid", a refund ends in a violet "Buyer refunded", an unpaid one ends "Ended" at the step where it stopped, and a failed one is flagged. It is derived from the state alone, with one extra fact: whether the buyer ever accepted, because "ended unpaid" can mean "the offer lapsed" or "the invoice was never paid" and the state cannot say which.
+- **Your move:** one strip at the top says what you need to do now, reusing the dashboard's rules (so the two can never disagree), with the time left, or what everyone is waiting on. It is not shown once a deal is over, because the tracker and the card below already say how it ended.
+- **Layout:** actions and history on the left, a rail on the right with the details (where the funds go, the deadline, creation time), the people (you are marked) including the arbiter's confirmation and key fingerprint, and the technical details (escrow id, payment hash) folded away. On a phone the rail drops below the actions. The page uses the full width like the dashboard.
+- **Long descriptions:** a multi-line description (a checklist, say) no longer becomes a giant title: the first line is the title and the rest is a "Terms" block. The New Escrow form already puts a title on the first line, so this matches it.
+
+**Decisions.** The action panels (`panels.tsx`: the secret, the release QR, disputes, arbiter decisions) are untouched: that logic is the riskiest in the app and the redesign did not need to change it, so only what surrounds it changed. Strings the browser tests read ("Funds go to", "The seller's own node", "confirmed", the fiat wording) were kept exactly, and the tracker avoids the `span[title]` pattern the tests use to find status badges.
+
+**What testing found (none of it a bug in the page, all worth knowing).**
+- *The 62-second refund hold was racy.* The shortest hold allowed is 60 seconds, so a 62-second offer leaves about two seconds for the buyer to open the page and accept before the server correctly refuses it. The refund browser test failed in three of five full runs and never alone, and the demo script told a presenter to use the same hold, so it could have failed live. Both tests and the script now use 75 seconds, which still shows the automatic refund and leaves 15 seconds to accept.
+- *Memory.* A browser tab crashed ("Target crashed") and a test timed out in one run. The Codespace had under 2 GB free while idle (a dev server, Docker, Postgres and Chromium together), so Chromium was starved. Stopping the Postgres container and restarting the dev server fixed it; the suite then passed 14 of 14 twice in a row. If it recurs, stop what the suite does not need.
+- *A second race in the rehearsal.* The arbiter's note can appear twice in the history (as the decision and as the settlement it caused) when the arbiter's own request records the settlement; the rehearsal now tolerates both, as the main suite already did.
+- The form pre-fills "Deal title" with "P2P asset sale" and puts it on the first line, so my first version of the new test (which put its title in the description) was wrong, not the page.
+
+**Verified.** 126 unit tests (13 new, covering every state of the tracker and the description splitting), lint and build, 14 browser tests (one new, covering the tracker moving, the next move changing hands, the details rail, the terms split and the technical details opening) and the 3-scene rehearsal. Checked in screenshots at desktop and phone width, in light and dark, for a buyer paying, a seller with locked funds, an offer, a settled deal, a refunded deal and a long description; the page does not scroll sideways at 390 px.
+
+**Not done.** The prose paragraph, the green notice and the "your move" strip still overlap in places while a deal is active. The operator's view of an escrow and the arbiter's dispute screen were not re-shot after the redesign (their logic is untouched, and the browser tests cover them).
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
