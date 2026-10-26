@@ -56,10 +56,11 @@ async function makeOffer(
 ) {
   const { page } = courier;
   await page.goto("/escrows/new");
+  await page.getByLabel("Description").fill(what);
+  await page.getByRole("button", { name: "Continue" }).click();
   if (arbiter) await page.getByLabel("Arbiter's user id").fill(arbiter);
   if (currency) await page.getByLabel("Also show the value in").selectOption(currency);
   await page.getByLabel("Amount (sats)").fill(sats);
-  await page.getByLabel("Description").fill(what);
   await page.getByLabel("Hold time amount").fill(hold[0]);
   await page.getByLabel("Hold time unit").selectOption(hold[1]);
   await page.getByRole("button", { name: "Create escrow" }).click();
