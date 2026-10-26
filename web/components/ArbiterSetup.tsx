@@ -6,6 +6,7 @@ import { fingerprint, generateArbiterKeyPair, loadArbiterKey, publicKeyOf, saveA
 import type { ArbiterKey } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
+import { BackupReminder } from "./BackupCard";
 import { Button, Card, CopyField, Field, inputClass, Notice, Spinner } from "./ui";
 
 /**
@@ -88,6 +89,7 @@ export function ArbiterSetup() {
   const fp = registered.fingerprint;
   return (
     <div className="space-y-6">
+      <BackupReminder />
       <div>
         <h1 className="text-xl font-bold">Act as an arbiter</h1>
         <p className="text-sm text-neutral-600 dark:text-neutral-400">

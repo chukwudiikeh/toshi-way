@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { NewUser } from "@/lib/schemas";
 import { useSession, useVaultState } from "@/lib/session";
 import { TokenReveal } from "./Account";
+import { BackupReminder } from "./BackupCard";
 import { Dashboard } from "./dashboard/Dashboard";
 import { Landing } from "./landing/Landing";
 import { Card, Notice } from "./ui";
@@ -51,6 +52,7 @@ export function Home() {
           .
         </Notice>
       )}
+      <BackupReminder />
       <Dashboard session={session} />
     </div>
   );

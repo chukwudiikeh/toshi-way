@@ -663,3 +663,44 @@ test("password vault: lock and unlock, wrong password, new device import, remove
   await page.getByRole("button", { name: "Remove from this device" }).last().click();
   await expect(page.getByLabel("Token", { exact: true })).toBeVisible();
 });
+
+test("backup: a buyer's release secret survives a new device through the backup file", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+  const id = await createEscrow(seller, buyer.id, "e2e backup", ["30", "minutes"]);
+  await buyer.page.goto(`/escrows/${id}`);
+  await buyer.page.getByRole("button", { name: /Accept offer/ }).click();
+  await expect(buyer.page.getByRole("button", { name: "Copy invoice" })).toBeVisible();
+
+  // The secret is new and not backed up: the page says so.
+  await expect(buyer.page.getByText(/aren't backed up|isn't backed up/)).toBeVisible();
+  const secret = await buyer.page.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id);
+  expect(secret).toMatch(/^[0-9a-f]{64}$/);
+
+  await buyer.page.goto("/account");
+  await buyer.page.getByLabel("Backup password").fill(PASSWORD);
+  const [download] = await Promise.all([
+    buyer.page.waitForEvent("download"),
+    buyer.page.getByRole("button", { name: "Download backup" }).click(),
+  ]);
+  const path = await download.path();
+  const text = (await import("node:fs")).readFileSync(path, "utf8");
+  expect(text).not.toContain(secret!);
+  expect(text).not.toContain(buyer.token);
+  await expect(buyer.page.getByText(/all backed up/)).toBeVisible();
+
+  // A new device: sign in with the token, then restore the file.
+  const other = await (await browser.newContext()).newPage();
+  await other.goto("/");
+  await importToken(other, buyer.token);
+  await expect(other.getByRole("heading", { name: "My escrows" })).toBeVisible();
+  await other.goto("/account");
+  await other.getByLabel("Backup file", { exact: true }).setInputFiles(path);
+  await other.getByLabel("Password of the backup file").fill("not the password at all");
+  await other.getByRole("button", { name: "Restore" }).click();
+  await expect(other.getByText(/password is not right for this backup/)).toBeVisible();
+  await other.getByLabel("Password of the backup file").fill(PASSWORD);
+  await other.getByRole("button", { name: "Restore" }).click();
+  await expect(other.getByText("Restored 1 item.")).toBeVisible();
+  expect(await other.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id)).toBe(secret);
+});

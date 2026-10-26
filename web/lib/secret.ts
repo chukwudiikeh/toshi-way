@@ -1,6 +1,8 @@
 // The release secret P: generated in the browser, kept in this browser, handed to the seller
 // through a URL fragment. Only H = sha256(P) is sent to the server when the buyer accepts.
 
+import { notifyChanged } from "./backup";
+
 const HEX64 = /^[0-9a-f]{64}$/;
 const FRAGMENT_KEY = "release";
 
@@ -70,4 +72,5 @@ export function saveSecret(escrowId: string, secretHex: string): void {
   const p = parseSecret(secretHex);
   if (!p) throw new Error("secret must be exactly 64 hex characters");
   localStorage.setItem(storageKey(escrowId), p);
+  notifyChanged();
 }
