@@ -196,6 +196,57 @@ pub async fn store_contract(store: &dyn Store) {
     assert!(store.node_events("b").await.unwrap().is_empty());
 }
 
+/// A long history: the list holds everything in play plus the newest 100 that ended, while the
+/// totals still add up over all of it.
+pub async fn history_contract(store: &dyn Store) {
+    use EscrowState::*;
+    let mut n = 0;
+    let mut add = |state: EscrowState, buyer: &str, seller: &str, amount: u64| {
+        n += 1;
+        let mut e = escrow(&format!("h{n:03}"));
+        e.state = state;
+        e.buyer_id = Some(buyer.into());
+        e.seller_id = seller.into();
+        e.amount_sats = amount;
+        e.created_at = n;
+        e
+    };
+    let mut all = Vec::new();
+    // Oldest first: two still in play, then 70 settled and 40 refunded, with "me" as the buyer.
+    all.push(add(Locked, "me", "them", 500));
+    all.push(add(Created, "me", "them", 400));
+    for _ in 0..70 {
+        all.push(add(Settled, "me", "them", 10));
+    }
+    for _ in 0..40 {
+        all.push(add(Refunded, "me", "them", 20));
+    }
+    // And a few where "me" is the seller, and one where "me" only judges.
+    for _ in 0..3 {
+        all.push(add(Settled, "them", "me", 100));
+    }
+    let mut judged = add(Settled, "them", "other", 9999);
+    judged.arbiter_id = Some("me".into());
+    all.push(judged);
+    for e in all {
+        store.insert(e).await.unwrap();
+    }
+
+    let list = store.list_for_user("me").await.unwrap();
+    let in_play = list.iter().filter(|e| !e.state.is_terminal()).count();
+    let ended = list.iter().filter(|e| e.state.is_terminal()).count();
+    assert_eq!((in_play, ended), (2, 100), "everything in play, and the newest 100 that ended");
+    assert_eq!(list.len(), 102);
+    assert!(list.iter().any(|e| e.id == "h001"), "an old escrow still in play is not cut off");
+    assert!(list.windows(2).all(|w| w[0].created_at >= w[1].created_at), "newest first");
+
+    let t = store.totals_for_user("me").await.unwrap();
+    assert_eq!(t.escrows, 116);
+    assert_eq!((t.settled_count, t.settled_paid, t.settled_received), (74, 700, 300));
+    assert_eq!((t.refunded_count, t.refunded_sats), (40, 800));
+    assert_eq!(store.totals_for_user("nobody").await.unwrap(), Default::default());
+}
+
 pub async fn user_store_contract(store: &dyn UserStore) {
     let alice = User { id: "alice".into(), role: Role::User, created_at: 10 };
     let root = User { id: "root".into(), role: Role::Operator, created_at: 11 };

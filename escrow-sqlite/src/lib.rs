@@ -7,7 +7,7 @@ use escrow_core::{
     fiat::FiatQuote,
     model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, User},
     state::EscrowState,
-    store::{EscrowUpdate, Store, StoreError, UserStore},
+    store::{EscrowUpdate, Store, StoreError, UserStore, UserTotals},
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
@@ -246,15 +246,47 @@ impl Store for SqliteStore {
     }
 
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
+        // Everything still in play, plus the newest 100 that have ended.
+        let ended = ended_states();
+        let party = "(buyer_id = ?1 OR seller_id = ?1 OR arbiter_id = ?1)";
         let rows = sqlx::query(&format!(
-            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = ?1 OR seller_id = ?1 OR arbiter_id = ?1 \
-             ORDER BY created_at DESC, id ASC LIMIT 100"
+            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE {party} AND (state NOT IN ({ended}) OR id IN ( \
+                 SELECT id FROM escrows WHERE {party} AND state IN ({ended}) \
+                 ORDER BY created_at DESC, id ASC LIMIT 100)) \
+             ORDER BY created_at DESC, id ASC"
         ))
         .bind(user_id)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
         rows.iter().map(escrow_from_row).collect()
+    }
+
+    async fn totals_for_user(&self, user_id: &str) -> Result<UserTotals, StoreError> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS escrows, \
+                    COALESCE(SUM(CASE WHEN state = 'SETTLED' THEN 1 ELSE 0 END), 0) AS settled_count, \
+                    COALESCE(SUM(CASE WHEN state = 'SETTLED' AND seller_id = ?1 THEN amount_sats ELSE 0 END), 0) AS settled_received, \
+                    COALESCE(SUM(CASE WHEN state = 'SETTLED' AND buyer_id = ?1 THEN amount_sats ELSE 0 END), 0) AS settled_paid, \
+                    COALESCE(SUM(CASE WHEN state = 'REFUNDED' THEN 1 ELSE 0 END), 0) AS refunded_count, \
+                    COALESCE(SUM(CASE WHEN state = 'REFUNDED' AND (buyer_id = ?1 OR seller_id = ?1) THEN amount_sats ELSE 0 END), 0) AS refunded_sats \
+             FROM escrows WHERE buyer_id = ?1 OR seller_id = ?1 OR arbiter_id = ?1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
+        let n = |col: &str| -> Result<u64, StoreError> {
+            Ok(row.try_get::<i64, _>(col).map_err(backend)?.max(0) as u64)
+        };
+        Ok(UserTotals {
+            escrows: n("escrows")?,
+            settled_count: n("settled_count")?,
+            settled_received: n("settled_received")?,
+            settled_paid: n("settled_paid")?,
+            refunded_count: n("refunded_count")?,
+            refunded_sats: n("refunded_sats")?,
+        })
     }
 
     async fn transition(
@@ -493,4 +525,14 @@ impl UserStore for SqliteStore {
             .map_err(backend)?;
         Ok(res.rows_affected() > 0)
     }
+}
+
+/// The terminal states as a SQL list such as `'SETTLED', 'REFUNDED'`. They are fixed names, never input.
+fn ended_states() -> String {
+    EscrowState::ALL
+        .into_iter()
+        .filter(|s| s.is_terminal())
+        .map(|s| format!("'{}'", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

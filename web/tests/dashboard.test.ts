@@ -116,6 +116,20 @@ describe("the headline numbers", () => {
     expect(s.attention).toBe(2);
   });
 
+  it("takes settled and refunded totals from the server when it sends them", () => {
+    const totals = {
+      escrows: 400,
+      settled: { count: 250, received: 90000, paid: 40000 },
+      refunded: { count: 60, sats: 12000 },
+    };
+    const s = summarize(list, NOW, totals);
+    expect(s.settled).toEqual(totals.settled);
+    expect(s.refunded).toEqual(totals.refunded);
+    // What is in play still comes from the list, which always holds all of it.
+    expect(s.lockedOut).toBe(5000);
+    expect(s.active).toBe(4);
+  });
+
   it("is all zeros for nobody", () => {
     expect(summarize([], NOW)).toEqual({
       attention: 0, active: 0, lockedOut: 0, lockedIn: 0, lockedCount: 0,
