@@ -1,8 +1,8 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
-import { useSession } from "@/lib/session";
+import { useEffect, type ReactNode } from "react";
+import { lockIfIdle, touch, useSession } from "@/lib/session";
 import { BoltIcon } from "./landing/icons";
 import { Sidebar } from "./Sidebar";
 
@@ -11,9 +11,25 @@ import { Sidebar } from "./Sidebar";
  * and a footer. A signed-out visitor on the home page gets the landing page instead, which is
  * full-width and brings its own navigation and footer, so the chrome steps aside for it.
  */
+/** Locks a password-protected account after it has sat idle, and counts clicks and keys as activity. */
+function useIdleLock() {
+  useEffect(() => {
+    const active = () => touch();
+    window.addEventListener("pointerdown", active);
+    window.addEventListener("keydown", active);
+    const timer = setInterval(() => lockIfIdle(), 30_000);
+    return () => {
+      window.removeEventListener("pointerdown", active);
+      window.removeEventListener("keydown", active);
+      clearInterval(timer);
+    };
+  }, []);
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const session = useSession();
+  useIdleLock();
 
   // Signed out on the home page: the landing page. While the browser has not yet said whether
   // anyone is signed in, keep the landing's colour (rather than flashing the app chrome at a
