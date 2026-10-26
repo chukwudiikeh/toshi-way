@@ -135,7 +135,7 @@ test.describe("scene 2: nobody shows up, the customer is refunded automatically"
   test("a short hold expires and the money goes back with no human action", async ({ browser }) => {
     const courier = await signedIn(browser, "courier");
     const customer = await signedIn(browser, "customer", PHONE);
-    const id = await makeOffer(courier, "Parcel #4822 (the courier never arrives)", "3000", ["1.04", "minutes"]); // 62 s
+    const id = await makeOffer(courier, "Parcel #4822 (the courier never arrives)", "3000", ["1.25", "minutes"]); // 75 s: the shortest allowed is 60 s, and the customer needs a few seconds to accept
     await acceptAndPay(customer, id);
     await shot(customer, "2a-customer-countdown-phone");
     stamp("locked; waiting out the deadline with nobody acting");
@@ -187,7 +187,8 @@ test.describe("scene 3: a dispute, decided by a trusted arbiter", () => {
     await arbiter.page.getByRole("button", { name: "Release to the seller" }).click();
     await arbiter.page.getByRole("button", { name: "Yes, pay the seller" }).click();
     for (const p of [courier, customer, arbiter]) await expect(badge(p.page, "Settled")).toBeVisible();
-    await expect(customer.page.getByText("Signed delivery note matches.")).toBeVisible();
+    // The note is in the history twice when the arbiter's request records the settlement itself.
+    await expect(customer.page.getByText("Signed delivery note matches.").first()).toBeVisible();
     await shot(customer, "3e-customer-after-decision-phone");
     await shot(courier, "3f-courier-paid");
     stamp("arbiter released the payment to the courier");

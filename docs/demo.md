@@ -9,7 +9,7 @@ Why delivery: the recipient has to be physically present at the handover, which 
 | Scene | Story | Takes |
 |---|---|---|
 | 1. Paid on handover | Customer pays, gets the parcel, shows the QR, courier is paid | ~3 min |
-| 2. Nobody shows up | Courier never arrives; the customer is refunded with no one lifting a finger | ~2 min (a 62 s wait) |
+| 2. Nobody shows up | Courier never arrives; the customer is refunded with no one lifting a finger | ~2 min (a 75 s wait) |
 | 3. A dispute | Customer won't release; the arbiter reads the evidence and pays the courier | ~4 min |
 
 ## Before you start (about 5 minutes)
@@ -59,7 +59,7 @@ A small "Demo wallet · regtest" label sits in the corner. It is a stand-in for 
 
 ## Scene 2: nobody shows up (~2 min)
 
-1. Courier: new escrow, `Parcel #4822 (the courier never arrives)`, `3000` sats, hold **1.04 minutes** (62 seconds). Create.
+1. Courier: new escrow, `Parcel #4822 (the courier never arrives)`, `3000` sats, hold **1.25 minutes** (75 seconds). Create. (The shortest hold allowed is 60 seconds, and the customer has to accept before it drops below that, so leave a little slack: 62 seconds is too tight to do live.)
 2. Customer: open the link, **Accept offer**, **Pay with my wallet.** **Funds locked**, with a countdown.
 3. **Do nothing.** Talk while the clock runs (about a minute):
    - "There is no refund button for the customer to press and nobody at our end to approve one. The lock simply expires."

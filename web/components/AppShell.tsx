@@ -24,6 +24,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   // account signs you in at once, which flips this from the landing layout to the app layout; if
   // the page were rebuilt by that, the one-time "save your token" screen would be lost with it.
   // So only classes and the optional pieces around it change, never the element that holds it.
+  // The dashboard and a single escrow use the full width; the other pages stay a narrow column.
+  const wide = path === "/" || (path.startsWith("/escrows/") && path !== "/escrows/new");
   const footer = (
     <footer className="bg-neutral-950 px-4 py-8 text-neutral-400 sm:px-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-3 text-xs sm:flex-row sm:items-center sm:justify-between">
@@ -51,7 +53,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           className={
             landing
               ? "flex flex-1 flex-col bg-neutral-950"
-              : `mx-auto w-full flex-1 px-4 py-6 sm:px-8 sm:py-10 ${path === "/" ? "max-w-6xl" : "max-w-3xl"}`
+              : `mx-auto w-full flex-1 px-4 py-6 sm:px-8 sm:py-10 ${wide ? "max-w-6xl" : "max-w-3xl"}`
           }
         >
           {children}
