@@ -369,6 +369,7 @@ dependencies = [
  "escrow-postgres",
  "escrow-sqlite",
  "hex",
+ "hmac",
  "http-body-util",
  "rand 0.8.8",
  "reqwest",

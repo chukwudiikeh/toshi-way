@@ -5,7 +5,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use escrow_core::{
     fiat::FiatQuote,
-    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Scope, User},
+    model::{ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Scope, User, Webhook, WebhookProgress},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore, UserTotals},
 };
@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/005_fiat.sql"),
     include_str!("migrations/006_api_keys.sql"),
     include_str!("migrations/007_checkout.sql"),
+    include_str!("migrations/008_webhooks.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
@@ -379,6 +380,30 @@ impl Store for SqliteStore {
         rows.iter().map(audit_from_row).collect()
     }
 
+    async fn audit_since(&self, seller_id: &str, after: i64, limit: u32) -> Result<Vec<AuditRow>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT a.seq, a.escrow_id, a.actor, a.action, a.from_state, a.to_state, a.reason, a.created_at \
+             FROM audit_log a JOIN escrows e ON e.id = a.escrow_id \
+             WHERE e.seller_id = ? AND a.seq > ? ORDER BY a.seq LIMIT ?",
+        )
+        .bind(seller_id)
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter()
+            .map(|r| Ok(AuditRow { seq: r.try_get("seq").map_err(backend)?, entry: audit_from_row(r)? }))
+            .collect()
+    }
+
+    async fn audit_head(&self) -> Result<i64, StoreError> {
+        sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM audit_log")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend)
+    }
+
     async fn record_node_event(&self, ev: NodeEventRecord) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO node_events (escrow_id, node_invoice_state, raw_event_hash, received_at) \
@@ -597,6 +622,95 @@ impl UserStore for SqliteStore {
             .map_err(backend)?;
         Ok(())
     }
+
+    async fn insert_webhook(&self, h: Webhook) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "INSERT INTO webhooks (id, user_id, url, signing_key_enc, created_at, last_seq, attempts, next_attempt_at, \
+                                   failing_since, disabled_at, last_attempt_at, last_status) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&h.id)
+        .bind(&h.user_id)
+        .bind(&h.url)
+        .bind(&h.signing_key_enc)
+        .bind(h.created_at)
+        .bind(h.last_seq)
+        .bind(h.attempts as i64)
+        .bind(h.next_attempt_at)
+        .bind(h.failing_since)
+        .bind(h.disabled_at)
+        .bind(h.last_attempt_at)
+        .bind(&h.last_status)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(StoreError::Conflict),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    async fn get_webhook(&self, id: &str) -> Result<Option<Webhook>, StoreError> {
+        let row = sqlx::query(&format!("SELECT {WEBHOOK_COLUMNS} FROM webhooks WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(webhook_from_row).transpose()
+    }
+
+    async fn list_webhooks(&self, user_id: &str) -> Result<Vec<Webhook>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {WEBHOOK_COLUMNS} FROM webhooks WHERE user_id = ? ORDER BY created_at, id"
+        ))
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(webhook_from_row).collect()
+    }
+
+    async fn delete_webhook(&self, user_id: &str, id: &str) -> Result<bool, StoreError> {
+        let res = sqlx::query("DELETE FROM webhooks WHERE id = ? AND user_id = ?")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn due_webhooks(&self, now: i64, limit: u32) -> Result<Vec<Webhook>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {WEBHOOK_COLUMNS} FROM webhooks WHERE disabled_at IS NULL AND next_attempt_at <= ? \
+             ORDER BY next_attempt_at, id LIMIT ?"
+        ))
+        .bind(now)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(webhook_from_row).collect()
+    }
+
+    async fn record_webhook_progress(&self, id: &str, p: WebhookProgress) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE webhooks SET last_seq = ?, attempts = ?, next_attempt_at = ?, failing_since = ?, \
+                                 disabled_at = ?, last_attempt_at = ?, last_status = ? WHERE id = ?",
+        )
+        .bind(p.last_seq)
+        .bind(p.attempts as i64)
+        .bind(p.next_attempt_at)
+        .bind(p.failing_since)
+        .bind(p.disabled_at)
+        .bind(p.last_attempt_at)
+        .bind(&p.last_status)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
 }
 
 /// The terminal states as a SQL list such as `'SETTLED', 'REFUNDED'`. They are fixed names, never input.
@@ -626,5 +740,25 @@ fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
         created_at: row.try_get("created_at").map_err(backend)?,
         last_used_at: row.try_get("last_used_at").map_err(backend)?,
         revoked_at: row.try_get("revoked_at").map_err(backend)?,
+    })
+}
+
+const WEBHOOK_COLUMNS: &str = "id, user_id, url, signing_key_enc, created_at, last_seq, attempts, next_attempt_at, \
+     failing_since, disabled_at, last_attempt_at, last_status";
+
+fn webhook_from_row(row: &SqliteRow) -> Result<Webhook, StoreError> {
+    Ok(Webhook {
+        id: row.try_get("id").map_err(backend)?,
+        user_id: row.try_get("user_id").map_err(backend)?,
+        url: row.try_get("url").map_err(backend)?,
+        signing_key_enc: row.try_get("signing_key_enc").map_err(backend)?,
+        created_at: row.try_get("created_at").map_err(backend)?,
+        last_seq: row.try_get("last_seq").map_err(backend)?,
+        attempts: row.try_get::<i64, _>("attempts").map_err(backend)?.max(0) as u32,
+        next_attempt_at: row.try_get("next_attempt_at").map_err(backend)?,
+        failing_since: row.try_get("failing_since").map_err(backend)?,
+        disabled_at: row.try_get("disabled_at").map_err(backend)?,
+        last_attempt_at: row.try_get("last_attempt_at").map_err(backend)?,
+        last_status: row.try_get("last_status").map_err(backend)?,
     })
 }

@@ -173,5 +173,5 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }

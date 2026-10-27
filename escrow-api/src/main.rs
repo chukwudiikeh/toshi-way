@@ -116,6 +116,7 @@ async fn run<S>(
 where
     S: Store + UserStore + Clone + 'static,
 {
+    let webhook_key = key.clone();
     let directory = LndDirectory::new(shared, store.clone(), key, Duration::from_secs(10))
         .allow_private_addresses(allow_private);
     let service = Arc::new(EscrowService::new(directory, store.clone(), TimingConfig::default()));
@@ -148,7 +149,17 @@ where
     if !rates.currencies().is_empty() {
         tracing::info!(source = %rates.name(), currencies = rates.currencies().len(), "fiat values on (display only)");
     }
-    let state = AppState::new(service.clone(), store, config, Arc::new(runner::unix_now)).with_rates(rates);
+    let web_base_url = config.web_base_url.clone();
+    let mut state = AppState::new(service.clone(), store.clone(), config, Arc::new(runner::unix_now)).with_rates(rates);
+
+    // Webhooks need the credential key to seal signing secrets, so they are on only when it is set.
+    let webhook_sender: Arc<dyn escrow_api::webhooks::Sender> = Arc::new(escrow_api::webhooks::HttpSender { allow_private });
+    let dispatcher = webhook_key.clone().map(|key| {
+        escrow_api::webhooks::Dispatcher::new(store.clone(), key, webhook_sender.clone(), web_base_url)
+    });
+    if let Some(key) = webhook_key {
+        state = state.with_webhooks(escrow_api::WebhookSupport { key, sender: webhook_sender });
+    }
     let app = router(state);
 
     // Keep escrows in step with the node, and cancel holds at their deadline.
@@ -161,6 +172,8 @@ where
         async move { runner::run_scheduler(&service, Duration::from_secs(1), std::future::pending()).await }
     });
 
+    let webhook_task = dispatcher.map(|d| tokio::spawn(d.run(Duration::from_secs(2), runner::unix_now)));
+
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "toshi-server listening");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -169,5 +182,8 @@ where
 
     events.abort();
     scheduler.abort();
+    if let Some(t) = webhook_task {
+        t.abort();
+    }
     Ok(())
 }

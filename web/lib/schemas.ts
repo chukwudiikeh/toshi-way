@@ -129,6 +129,25 @@ export const ApiKeyList = z.object({ api_keys: z.array(ApiKeyInfo) });
 export const NewApiKey = ApiKeyInfo.extend({ key: z.string() });
 export type NewApiKey = z.infer<typeof NewApiKey>;
 
+/** An endpoint as listed: never carries the signing secret. */
+export const WebhookInfo = z.object({
+  id: z.string(),
+  url: z.string(),
+  status: z.enum(["ok", "failing", "disabled"]),
+  created_at: unixSecs,
+  failing_since: unixSecs.nullable(),
+  disabled_at: unixSecs.nullable(),
+  last_attempt_at: unixSecs.nullable(),
+  last_status: z.string().nullable(),
+});
+export type WebhookInfo = z.infer<typeof WebhookInfo>;
+
+export const WebhookList = z.object({ webhooks: z.array(WebhookInfo) });
+/** A new endpoint: the only time the signing secret is seen. */
+export const NewWebhook = WebhookInfo.extend({ secret: z.string() });
+export type NewWebhook = z.infer<typeof NewWebhook>;
+export const WebhookTestResult = z.object({ delivered: z.boolean(), status: z.string() });
+
 export const NodeInfo = z.object({
   mode: z.enum(["own", "shared", "none"]),
   address: z.string().nullable(),

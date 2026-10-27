@@ -14,6 +14,7 @@ import { VaultError } from "@/lib/vault";
 import { SignIn } from "./Account";
 import { ApiKeysCard } from "./ApiKeysCard";
 import { BackupCard } from "./BackupCard";
+import { WebhooksCard } from "./WebhooksCard";
 import { NewPasswordFields, useNewPassword } from "./PasswordFields";
 import { Button, Card, ConfirmButton, CopyField, Field, inputClass, Notice } from "./ui";
 
@@ -44,6 +45,7 @@ export function AccountPage() {
       </Card>
       {state === "unprotected" ? <AddPassword /> : <ProtectedTools />}
       {session.kind === "user" && <ApiKeysCard />}
+      {session.kind === "user" && <WebhooksCard />}
       <BackupCard />
       <Card title="This device">
         <div className="flex flex-wrap items-start gap-3">

@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    arbiter, checkout,
+    arbiter, checkout, webhooks,
     rates::RateError,
     auth::{
         hash_token, is_prospective_buyer, new_api_key, new_api_key_id, new_token, new_user_id, party_of, ApiAuth, Auth, Party,
@@ -50,7 +50,7 @@ where
     }
 }
 
-fn escrow_view(e: &Escrow, party: Party) -> Value {
+pub(crate) fn escrow_view(e: &Escrow, party: Party) -> Value {
     json!({
         "id": e.id,
         "buyer_id": e.buyer_id,
@@ -91,7 +91,7 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
 
 /// Add the checkout link (the escrow's page on the web app) when the server knows its public address.
 /// It is the link a business sends its customer to; opening it signs a new visitor up on the spot.
-fn with_checkout(mut view: Value, base: Option<&str>) -> Value {
+pub(crate) fn with_checkout(mut view: Value, base: Option<&str>) -> Value {
     if let (Some(base), Some(id)) = (base, view["id"].as_str().map(str::to_string)) {
         view["checkout_url"] = json!(format!("{base}/escrows/{id}"));
     }
@@ -935,4 +935,141 @@ where
         return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such working key"));
     }
     Ok(Json(json!({ "revoked": true })))
+}
+
+// --- Webhooks -------------------------------------------------------------------------------
+
+fn webhook_view(h: &escrow_core::model::Webhook) -> Value {
+    let status = if h.disabled_at.is_some() {
+        "disabled"
+    } else if h.failing_since.is_some() {
+        "failing"
+    } else {
+        "ok"
+    };
+    json!({
+        "id": h.id,
+        "url": h.url,
+        "status": status,
+        "created_at": h.created_at,
+        "failing_since": h.failing_since,
+        "disabled_at": h.disabled_at,
+        "last_attempt_at": h.last_attempt_at,
+        "last_status": h.last_status,
+    })
+}
+
+fn webhooks_unavailable() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "webhooks_unavailable",
+        "this server is not set up for webhooks (it needs NODE_CREDENTIAL_KEY)",
+    )
+}
+
+#[derive(Deserialize)]
+pub struct WebhookReq {
+    url: String,
+}
+
+/// Add an endpoint. Its signing secret is in this response only.
+pub async fn webhook_create<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    ApiJson(req): ApiJson<WebhookReq>,
+) -> Result<(StatusCode, Json<Value>), ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    require_user(&user)?;
+    let support = st.webhooks.clone().ok_or_else(webhooks_unavailable)?;
+    let url = req.url.trim().to_string();
+    support.sender.check_url(&url).await.map_err(|m| ApiError::bad_request("invalid_url", m))?;
+    if st.users.list_webhooks(&user.id).await?.len() >= webhooks::MAX_WEBHOOKS_PER_USER {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "too_many_webhooks",
+            format!("you already have {} endpoints; delete one first", webhooks::MAX_WEBHOOKS_PER_USER),
+        ));
+    }
+    let secret = webhooks::new_signing_secret();
+    let now = (st.now)();
+    let hook = escrow_core::model::Webhook {
+        id: webhooks::new_webhook_id(),
+        user_id: user.id.clone(),
+        url,
+        signing_key_enc: support.key.seal(secret.as_bytes()),
+        created_at: now,
+        // Only what happens from now on is sent.
+        last_seq: st.service.audit_head().await?,
+        attempts: 0,
+        next_attempt_at: now,
+        failing_since: None,
+        disabled_at: None,
+        last_attempt_at: None,
+        last_status: None,
+    };
+    st.users.insert_webhook(hook.clone()).await?;
+    let mut v = webhook_view(&hook);
+    v["secret"] = json!(secret);
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+pub async fn webhook_list<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let hooks: Vec<Value> = st.users.list_webhooks(&user.id).await?.iter().map(webhook_view).collect();
+    Ok(Json(json!({ "webhooks": hooks })))
+}
+
+pub async fn webhook_delete<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    if !st.users.delete_webhook(&user.id, &id).await? {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such endpoint"));
+    }
+    Ok(Json(json!({ "deleted": true })))
+}
+
+/// Send a test event to an endpoint now, so a business can see that it is reachable and that it
+/// checks the signature correctly. It does not touch the endpoint's delivery progress.
+pub async fn webhook_test<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let support = st.webhooks.clone().ok_or_else(webhooks_unavailable)?;
+    let hook = st
+        .users
+        .get_webhook(&id)
+        .await?
+        .filter(|h| h.user_id == user.id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such endpoint"))?;
+    let secret = support
+        .key
+        .open(&hook.signing_key_enc)
+        .and_then(|b| String::from_utf8(b).ok())
+        .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "secret_unreadable", "the signing secret cannot be opened"))?;
+    let now = (st.now)();
+    let event = webhooks::test_event(now);
+    let body = event.to_string();
+    let headers = webhooks::delivery_headers(&secret, now, &event, &body);
+    let result = support.sender.send(&hook.url, headers, body).await;
+    Ok(Json(match result {
+        Ok(code) => json!({ "delivered": (200..300).contains(&code), "status": code.to_string() }),
+        Err(why) => json!({ "delivered": false, "status": why }),
+    }))
 }

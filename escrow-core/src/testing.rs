@@ -2,7 +2,7 @@
 //! [`store_contract`] with a fresh, empty store so MemoryStore, SQLite and Postgres stay interchangeable.
 
 use crate::{
-    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, Role, Scope, User},
+    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, Role, Scope, User, Webhook, WebhookProgress},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore},
 };
@@ -120,6 +120,22 @@ pub async fn store_contract(store: &dyn Store) {
     );
     assert_eq!(log[0], audit("a", Created, InvoiceIssued, 200));
     assert_eq!(store.audit_log("b").await.unwrap().len(), 1);
+
+    // The audit log read as a feed for one seller: in order, resumable from a position, limited,
+    // and never another seller's entries.
+    let feed = store.audit_since("seller", 0, 100).await.unwrap();
+    assert_eq!(
+        feed.iter().map(|r| (r.entry.escrow_id.as_str(), r.entry.to_state)).collect::<Vec<_>>(),
+        vec![("a", InvoiceIssued), ("a", Locked), ("b", Failed)]
+    );
+    assert!(feed.windows(2).all(|w| w[0].seq < w[1].seq), "positions only grow");
+    assert_eq!(store.audit_since("seller", feed[0].seq, 100).await.unwrap(), feed[1..].to_vec(), "resume after a position");
+    assert_eq!(store.audit_since("seller", 0, 2).await.unwrap(), feed[..2].to_vec(), "limited");
+    assert!(store.audit_since("seller", feed[2].seq, 100).await.unwrap().is_empty());
+    assert!(store.audit_since("nobody", 0, 100).await.unwrap().is_empty());
+    let head = store.audit_head().await.unwrap();
+    assert!(head >= feed[2].seq);
+    assert!(store.audit_since("seller", head, 100).await.unwrap().is_empty(), "from the head there is nothing yet");
 
     // Active listing leaves out terminal escrows.
     let active: Vec<_> = store.list_active().await.unwrap().into_iter().map(|e| e.id).collect();
@@ -311,6 +327,56 @@ pub async fn user_store_contract(store: &dyn UserStore) {
     let revoked = store.api_key_by_hash("kh-1").await.unwrap().unwrap();
     assert_eq!(revoked.revoked_at, Some(96), "the first revocation time stands");
     assert!(!revoked.allows(Scope::EscrowsRead), "a revoked key allows nothing");
+
+    // Webhook endpoints: stored per user, found when due, and their progress recorded.
+    let hook = |id: &str, user: &str, at: i64| Webhook {
+        id: id.into(),
+        user_id: user.into(),
+        url: format!("https://{id}.example.com/hook"),
+        signing_key_enc: vec![1, 2, 3],
+        created_at: at,
+        last_seq: 5,
+        attempts: 0,
+        next_attempt_at: at,
+        failing_since: None,
+        disabled_at: None,
+        last_attempt_at: None,
+        last_status: None,
+    };
+    let (h1, h2) = (hook("h1", "alice", 100), hook("h2", "alice", 200));
+    store.insert_webhook(h1.clone()).await.unwrap();
+    store.insert_webhook(h2.clone()).await.unwrap();
+    assert_eq!(store.insert_webhook(h1.clone()).await, Err(StoreError::Conflict));
+    store.insert_webhook(hook("h3", "root", 150)).await.unwrap();
+    assert_eq!(store.get_webhook("h1").await.unwrap(), Some(h1.clone()));
+    assert_eq!(store.get_webhook("nope").await.unwrap(), None);
+    assert_eq!(store.list_webhooks("alice").await.unwrap(), vec![h1.clone(), h2.clone()], "oldest first");
+    let due = |now| async move { store.due_webhooks(now, 10).await.unwrap().into_iter().map(|h| h.id).collect::<Vec<_>>() };
+    assert_eq!(due(99).await, Vec::<String>::new());
+    assert_eq!(due(150).await, vec!["h1", "h3"]);
+    assert_eq!(due(300).await, vec!["h1", "h3", "h2"], "most overdue first");
+    assert_eq!(store.due_webhooks(300, 2).await.unwrap().len(), 2, "limited");
+    let progress = WebhookProgress {
+        last_seq: 9,
+        attempts: 2,
+        next_attempt_at: 500,
+        failing_since: Some(400),
+        disabled_at: None,
+        last_attempt_at: Some(410),
+        last_status: Some("503".into()),
+    };
+    store.record_webhook_progress("h1", progress.clone()).await.unwrap();
+    let h = store.get_webhook("h1").await.unwrap().unwrap();
+    assert_eq!((h.last_seq, h.attempts, h.next_attempt_at, h.failing_since), (9, 2, 500, Some(400)));
+    assert_eq!((h.last_attempt_at, h.last_status.as_deref()), (Some(410), Some("503")));
+    assert_eq!(due(300).await, vec!["h3", "h2"], "not due until its next attempt");
+    store.record_webhook_progress("h2", WebhookProgress { disabled_at: Some(450), ..progress }).await.unwrap();
+    assert_eq!(due(10_000).await, vec!["h3", "h1"], "a disabled endpoint is never due");
+    store.record_webhook_progress("ghost", WebhookProgress { last_seq: 1, attempts: 0, next_attempt_at: 0, failing_since: None, disabled_at: None, last_attempt_at: None, last_status: None }).await.unwrap();
+    assert!(!store.delete_webhook("root", "h1").await.unwrap(), "not the owner's");
+    assert!(store.delete_webhook("alice", "h1").await.unwrap());
+    assert!(!store.delete_webhook("alice", "h1").await.unwrap());
+    assert_eq!(store.get_webhook("h1").await.unwrap(), None);
 
     // An arbiter's public key: registered, replaced as a whole, kept per user.
     assert_eq!(store.arbiter_key("alice").await.unwrap(), None);
