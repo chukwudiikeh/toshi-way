@@ -32,6 +32,12 @@ export const Escrow = z.object({
   seller_id: z.string().min(1),
   amount_sats: z.number().int().positive(),
   description: z.string(),
+  /** A business's own order number for this escrow, if it set one. */
+  reference: z.string().nullable().default(null),
+  /** A link the seller offered the buyer back to its own site. Set by the seller: treat it as untrusted. */
+  return_url: z.string().nullable().default(null),
+  /** For the seller's software: the page a customer is sent to. Present only when the server knows its web address. */
+  checkout_url: z.string().optional(),
   payment_hash: hex64.nullable(),
   state: EscrowState,
   invoice_expires_at: unixSecs.nullable(),

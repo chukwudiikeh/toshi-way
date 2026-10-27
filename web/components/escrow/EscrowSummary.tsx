@@ -27,6 +27,11 @@ export function EscrowHeader({ escrow }: { escrow: Escrow }) {
             <span>Escrow · you are the</span>
             <RoleBadge role={escrow.your_role} />
             <span className="font-mono text-neutral-400">#{shortId(escrow.id)}</span>
+            {escrow.reference && (
+              <span className="rounded-md bg-neutral-100 px-2 py-0.5 font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                Order {escrow.reference}
+              </span>
+            )}
           </div>
           <h1 className="mt-2 break-words text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1>
           <div className="mt-3">
@@ -210,6 +215,12 @@ export function DetailsCard({ escrow }: { escrow: Escrow }) {
             )}
           </dd>
         </div>
+        {escrow.reference && (
+          <div>
+            <dt className="text-neutral-500">Seller&apos;s order reference</dt>
+            <dd className="break-words font-medium">{escrow.reference}</dd>
+          </div>
+        )}
         <div>
           <dt className="text-neutral-500">{ended ? "Deadline was" : "Release deadline"}</dt>
           <dd>{formatLocalTime(escrow.deadline_at)}</dd>
@@ -219,6 +230,42 @@ export function DetailsCard({ escrow }: { escrow: Escrow }) {
           <dd>{formatLocalTime(escrow.created_at)}</dd>
         </div>
       </dl>
+    </Rail>
+  );
+}
+
+/** The address of a link the seller set, or null when it is not a plain web link. */
+function linkHost(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.host : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A way back to the seller's own site, for a buyer who came from a business's checkout. The seller
+ * set it, so it is shown with its address spelled out and is only ever followed by a click.
+ */
+export function ReturnLink({ escrow }: { escrow: Escrow }) {
+  const host = escrow.return_url ? linkHost(escrow.return_url) : null;
+  if (!escrow.return_url || !host || escrow.your_role !== "buyer" || escrow.state === "CREATED") return null;
+  return (
+    <Rail title="Back to the seller">
+      <div className="space-y-3 text-sm">
+        <a
+          href={escrow.return_url}
+          rel="noopener noreferrer"
+          className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        >
+          Return to {host} <ArrowIcon className="size-4" />
+        </a>
+        <p className="text-xs text-neutral-500">
+          The seller chose this link. Your escrow stays here and carries on whether or not you follow it. Check the
+          address before you go.
+        </p>
+      </div>
     </Rail>
   );
 }

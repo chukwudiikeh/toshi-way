@@ -9,7 +9,7 @@ import { useSession } from "@/lib/session";
 import type { NewUser } from "@/lib/schemas";
 import { CreateAccount, SignIn, TokenReveal } from "../Account";
 import { Card, Notice, Spinner } from "../ui";
-import { DetailsCard, EscrowHeader, PeopleCard, Progress, TechnicalCard, Terms, YourMove } from "./EscrowSummary";
+import { DetailsCard, EscrowHeader, PeopleCard, Progress, ReturnLink, TechnicalCard, Terms, YourMove } from "./EscrowSummary";
 import { useEscrow, useEvents } from "./hooks";
 import { BackupReminder } from "../BackupCard";
 import { EscrowPanel } from "./panels";
@@ -115,6 +115,7 @@ function Loaded({ id, linkSecret }: { id: string; linkSecret: string | null }) {
           <Timeline events={events} escrow={escrow} />
         </div>
         <aside className="min-w-0 space-y-4">
+          <ReturnLink escrow={escrow} />
           <DetailsCard escrow={escrow} />
           <PeopleCard escrow={escrow} />
           <TechnicalCard escrow={escrow} />

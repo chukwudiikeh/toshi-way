@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    arbiter,
+    arbiter, checkout,
     rates::RateError,
     auth::{
         hash_token, is_prospective_buyer, new_api_key, new_api_key_id, new_token, new_user_id, party_of, ApiAuth, Auth, Party,
@@ -57,6 +57,9 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
         "seller_id": e.seller_id,
         "amount_sats": e.amount_sats,
         "description": e.description,
+        // A business's own order number and its link back, if it set them.
+        "reference": e.reference,
+        "return_url": e.return_url,
         "payment_hash": e.payment_hash.map(hex::encode),
         "state": e.state.as_str(),
         "invoice_expires_at": e.invoice_expires_at,
@@ -84,6 +87,15 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
             "source": f.source,
         })),
     })
+}
+
+/// Add the checkout link (the escrow's page on the web app) when the server knows its public address.
+/// It is the link a business sends its customer to; opening it signs a new visitor up on the spot.
+fn with_checkout(mut view: Value, base: Option<&str>) -> Value {
+    if let (Some(base), Some(id)) = (base, view["id"].as_str().map(str::to_string)) {
+        view["checkout_url"] = json!(format!("{base}/escrows/{id}"));
+    }
+    view
 }
 
 fn parse_hex32(field: &str, s: &str) -> Result<[u8; 32], ApiError> {
@@ -157,6 +169,12 @@ pub struct CreateReq {
     /// is taken now and locked.
     #[serde(default)]
     fiat_currency: Option<String>,
+    /// The business's own order number, so it can match this escrow to its records.
+    #[serde(default)]
+    reference: Option<String>,
+    /// A link the buyer is offered back to the business's checkout (https only).
+    #[serde(default)]
+    return_url: Option<String>,
     amount_sats: u64,
     description: String,
     /// Seconds from now until the settle-by deadline.
@@ -191,6 +209,8 @@ where
             format!("description is limited to {} characters", st.config.max_description_len),
         ));
     }
+    let reference = checkout::parse_reference(req.reference.as_deref())?;
+    let return_url = checkout::parse_return_url(req.return_url.as_deref())?;
     let buyer_id = req.buyer_id.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(str::to_string);
     if let Some(buyer_id) = &buyer_id {
         match st.users.get_user(buyer_id).await? {
@@ -241,13 +261,15 @@ where
     let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body_hash = hex::encode(Sha256::digest(
         format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             buyer_id.as_deref().unwrap_or(""),
             arbiter_id.as_deref().unwrap_or(""),
             fiat.as_ref().map(|f| f.currency.as_str()).unwrap_or(""),
             req.amount_sats,
             req.description,
-            req.hold_secs
+            req.hold_secs,
+            reference.as_deref().unwrap_or(""),
+            return_url.as_deref().unwrap_or("")
         )
         .as_bytes(),
     ));
@@ -277,13 +299,15 @@ where
                 arbiter,
                 amount_sats: req.amount_sats,
                 fiat,
+                reference,
+                return_url,
                 description: req.description,
                 deadline_at: now.saturating_add(req.hold_secs),
             },
             now,
         )
         .await?;
-    let view = escrow_view(&escrow, Party::Seller);
+    let view = with_checkout(escrow_view(&escrow, Party::Seller), st.config.web_base_url.as_deref());
     if let (Some(cache), Some(key)) = (cache.as_mut(), key) {
         cache.insert((user.id, key), (body_hash, view.clone()));
     }
@@ -306,7 +330,9 @@ where
         .list_for_user(&user.id)
         .await?
         .iter()
-        .filter_map(|e| party_of(e, &user).map(|p| escrow_view(e, p)))
+        .filter_map(|e| {
+            party_of(e, &user).map(|p| with_checkout(escrow_view(e, p), st.config.web_base_url.as_deref()))
+        })
         .collect();
     // Totals cover the whole history, so they stay right when there are more escrows than the list holds.
     let t = st.service.totals_for_user(&user.id).await?;
@@ -332,7 +358,7 @@ where
     auth.require(Scope::EscrowsRead)?;
     let user = auth.user;
     let (escrow, party) = load(&st, &id, &user).await?;
-    Ok(Json(escrow_view(&escrow, party)))
+    Ok(Json(with_checkout(escrow_view(&escrow, party), st.config.web_base_url.as_deref())))
 }
 
 #[derive(Deserialize)]

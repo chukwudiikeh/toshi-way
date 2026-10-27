@@ -5,6 +5,7 @@
 
 pub mod arbiter;
 pub mod auth;
+pub mod checkout;
 pub mod error;
 pub mod ratelimit;
 pub mod rates;
@@ -46,6 +47,9 @@ pub struct ApiConfig {
     pub register_limit_per_min: u32,
     /// Browser origins allowed to call the API (for example `http://localhost:3001`).
     pub cors_origins: Vec<String>,
+    /// The public address of the web app (for example `https://pay.example.com`). With it, the API can
+    /// give a business the checkout link for each escrow it makes. Without it there is no such link.
+    pub web_base_url: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -56,6 +60,7 @@ impl Default for ApiConfig {
             rate_limit_per_min: 120,
             register_limit_per_min: 10,
             cors_origins: Vec::new(),
+            web_base_url: None,
         }
     }
 }

@@ -741,3 +741,47 @@ test("API keys: a business makes a key, its software uses it, and revoking stops
   await expect(page.getByText(/revoked/)).toBeVisible();
   expect((await call("get", "/api/v1/escrows")).status()).toBe(401);
 });
+
+test("checkout: a business's offer carries its order number, and the customer gets a link back after accepting", async ({ browser }) => {
+  const shop = await newParty(browser);
+  const customer = await newParty(browser);
+
+  // The business's software makes a key, then an offer for this customer with its own order number.
+  const k = await shop.page.request.post("/api/v1/me/api-keys", {
+    headers: { Authorization: `Bearer ${shop.token}` },
+    data: { name: "checkout", scopes: ["escrows:read", "escrows:write"] },
+  });
+  const key = (await k.json()).key as string;
+  const offer = (data: object) =>
+    shop.page.request.post("/api/v1/escrows", {
+      headers: { Authorization: `Bearer ${key}`, "Idempotency-Key": crypto.randomUUID() },
+      data: { amount_sats: 1000, description: "Parcel to Ikeja", hold_secs: 1800, ...data },
+    });
+
+  // A link that could mislead the customer is refused outright.
+  const bad = await offer({ buyer_id: customer.id, return_url: "https://shop.example.com@evil.example/" });
+  expect(bad.status()).toBe(400);
+  expect((await bad.json()).error.code).toBe("invalid_return_url");
+
+  const made = await offer({ buyer_id: customer.id, reference: "ORD-1001", return_url: "https://shop.example.com/thanks?o=1001" });
+  expect(made.status()).toBe(201);
+  const id = (await made.json()).id as string;
+
+  // The customer is sent to the escrow page: the order shows, and there is no way out yet.
+  await customer.page.goto(`/escrows/${id}`);
+  await expect(customer.page.getByText("Order ORD-1001").first()).toBeVisible();
+  await expect(customer.page.getByRole("link", { name: /Return to/ })).toHaveCount(0);
+
+  // After they accept, the link back appears with the shop's address spelled out.
+  await customer.page.getByRole("button", { name: /Accept offer/ }).click();
+  await expect(customer.page.getByRole("button", { name: "Copy invoice" })).toBeVisible();
+  const back = customer.page.getByRole("link", { name: /Return to shop\.example\.com/ });
+  await expect(back).toBeVisible();
+  await expect(back).toHaveAttribute("href", "https://shop.example.com/thanks?o=1001");
+  await expect(back).toHaveAttribute("rel", /noopener/);
+
+  // The seller sees the order number too, but no return link (that is for the buyer).
+  await shop.page.goto(`/escrows/${id}`);
+  await expect(shop.page.getByText("Order ORD-1001").first()).toBeVisible();
+  await expect(shop.page.getByRole("link", { name: /Return to/ })).toHaveCount(0);
+});

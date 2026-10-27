@@ -17,6 +17,8 @@ fn escrow(id: &str) -> Escrow {
         arbiter_confirmed_at: None,
         node: NodeKind::Shared,
         fiat: None,
+        reference: None,
+        return_url: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "parcel".into(),
@@ -49,6 +51,17 @@ pub async fn store_contract(store: &dyn Store) {
     let e = escrow("a");
     store.insert(e.clone()).await.unwrap();
     assert_eq!(store.get("a").await.unwrap(), Some(e.clone()));
+
+    // A business's order number and link back survive storage (and are absent when not set).
+    let mut shop = escrow("shop");
+    shop.buyer_id = Some("shop-buyer".into());
+    shop.seller_id = "shop-seller".into();
+    shop.reference = Some("order #1001".into());
+    shop.return_url = Some("https://shop.example.com/thanks?o=1001".into());
+    store.insert(shop.clone()).await.unwrap();
+    assert_eq!(store.get("shop").await.unwrap(), Some(shop));
+    assert_eq!(store.get("a").await.unwrap().unwrap().reference, None);
+    store.transition("shop", EscrowState::Created, EscrowUpdate::default(), audit("shop", EscrowState::Created, EscrowState::Failed, 150)).await.unwrap();
     assert_eq!(store.get("missing").await.unwrap(), None);
     assert_eq!(store.insert(e.clone()).await, Err(StoreError::Conflict));
 
