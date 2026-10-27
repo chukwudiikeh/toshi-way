@@ -8,6 +8,8 @@
 // The buyer's invoice is paid from the buyer node with lncli, as a developer would by hand.
 
 import { execFile, spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
+import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -784,4 +786,79 @@ test("checkout: a business's offer carries its order number, and the customer ge
   await shop.page.goto(`/escrows/${id}`);
   await expect(shop.page.getByText("Order ORD-1001").first()).toBeVisible();
   await expect(shop.page.getByRole("link", { name: /Return to/ })).toHaveCount(0);
+});
+
+test("webhooks: a business adds an address, gets a signed test, and is told when an escrow changes", async ({ browser }) => {
+  const shop = await newParty(browser);
+  const customer = await newParty(browser);
+
+  // The business's own server, listening for messages.
+  const received: { headers: Record<string, string | string[] | undefined>; body: string }[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      received.push({ headers: req.headers, body });
+      res.statusCode = 200;
+      res.end("ok");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+
+  try {
+    const { page } = shop;
+    await page.goto("/account");
+    await page.getByLabel("Webhook address").fill(`http://127.0.0.1:${port}/toshi`);
+    await page.getByRole("button", { name: "Add address" }).click();
+    await expect(page.getByText("Copy the signing secret now.")).toBeVisible();
+    const secret = (await page.locator("code", { hasText: /^whsec_/ }).first().textContent())!.trim();
+    expect(secret).toMatch(/^whsec_[0-9a-f]{64}$/);
+    await page.getByRole("button", { name: "I have copied it" }).click();
+    await expect(page.getByText(secret)).toHaveCount(0);
+
+    // The signature a receiver would check: HMAC-SHA256 of "<t>.<body>" with the secret.
+    const verify = (m: (typeof received)[number]) => {
+      const sig = String(m.headers["toshi-signature"]);
+      const [, t, v1] = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(sig)!;
+      return createHmac("sha256", secret).update(`${t}.${m.body}`).digest("hex") === v1;
+    };
+
+    // "Send test" reaches the server and the page says so.
+    await page.getByRole("button", { name: "Send test" }).click();
+    await expect(page.getByText(/Delivered: your server answered 200/)).toBeVisible();
+    expect(received).toHaveLength(1);
+    expect(JSON.parse(received[0].body).type).toBe("webhook.test");
+    expect(verify(received[0])).toBe(true);
+
+    // A real change: the shop makes an offer and the customer accepts it on our page.
+    const made = await page.request.post("/api/v1/escrows", {
+      headers: { Authorization: `Bearer ${shop.token}` },
+      data: { buyer_id: customer.id, amount_sats: 1000, description: "Parcel", hold_secs: 1800, reference: "ORD-2002" },
+    });
+    expect(made.status()).toBe(201);
+    const id = (await made.json()).id as string;
+    await customer.page.goto(`/escrows/${id}`);
+    await customer.page.getByRole("button", { name: /Accept offer/ }).click();
+    await expect(customer.page.getByRole("button", { name: "Copy invoice" })).toBeVisible();
+
+    await expect.poll(() => received.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
+    const event = JSON.parse(received[1].body);
+    expect(event.type).toBe("escrow.accepted");
+    expect(event.data.state).toBe("INVOICE_ISSUED");
+    expect(event.data.escrow.id).toBe(id);
+    expect(event.data.escrow.reference).toBe("ORD-2002");
+    expect(verify(received[1])).toBe(true);
+    // Nothing from before the address was added, and nothing twice.
+    await page.waitForTimeout(5000);
+    expect(received.filter((m) => JSON.parse(m.body).type === "escrow.accepted")).toHaveLength(1);
+
+    // Delete it from the page: the list empties.
+    await page.reload();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete address" }).click();
+    await expect(page.getByText("No addresses yet.")).toBeVisible();
+  } finally {
+    server.close();
+  }
 });

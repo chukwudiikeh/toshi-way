@@ -666,6 +666,27 @@ Both are stored on the escrow (`reference`, `return_url`; sqlite migration 007, 
 
 ---
 
+## 31. Webhooks (step 3 of the merchant integration)
+
+A business should not have to keep asking "has the customer paid yet?". With a webhook the server calls the business's own address when one of its escrows changes. Section 30 ended on the rule this serves: a business learns that an escrow was paid from the API, never from the customer arriving back on its site.
+
+**Setting one up.** On the Account page, a Webhooks card (or `POST /api/v1/me/webhooks` with `{url}`, account token only): the address, `https://`, at most 5 per account. The response carries a signing secret, `whsec_` plus 256 random bits, **shown once**. It is stored sealed under `NODE_CREDENTIAL_KEY` (the same key that seals sellers' node macaroons), so webhooks exist only when that key is set; otherwise the endpoint returns `409 webhooks_unavailable` and the card says so. Only changes from the moment the address is added are sent. `GET` lists endpoints, `DELETE` removes one, and `POST /api/v1/me/webhooks/{id}/test` sends a `webhook.test` event now and reports what the receiver answered, without touching delivery progress. API keys cannot manage endpoints.
+
+**What is sent.** One `POST` per audit-log entry (every real state change) of an escrow the account sells, as JSON:
+`{"id":"evt_<n>","type":"escrow.locked","created_at":..., "data":{"state":"LOCKED","escrow":{...}}}`. `type` is `escrow.accepted` (the buyer accepted and the invoice was issued), `escrow.locked` (the buyer paid), `escrow.settled`, `escrow.refunded`, `escrow.expired`, `escrow.disputed`, `escrow.failed`, or `escrow.updated` (a change within a state, such as an arbiter confirming). `data.state` is what the escrow became in this event; `data.escrow` is the seller's view of it **as it is now**, with the business's `reference` and the `checkout_url`. It never includes the invoice or any secret. Treat a message as a signed nudge and read the escrow from the API before acting on it.
+
+**Signing.** Headers: `Toshi-Signature: t=<unix seconds>,v1=<hex>`, `Toshi-Event-Id`, `Toshi-Event-Type`. `v1` is the HMAC-SHA256 of the text `<t>.<raw body>` keyed with the signing secret. A receiver recomputes it over the exact bytes it received, compares in constant time, and rejects a `t` that is too old (say, over five minutes) to blunt replays. The same event can arrive more than once if an acknowledgement is lost, so a receiver should treat `Toshi-Event-Id` as its idempotency key.
+
+**Delivery.** Driven by the audit log, not by hooks in the service: each endpoint keeps `last_seq`, the last log position it was sent, so a restart loses nothing and an endpoint that is down simply falls behind and catches up, in order. A background worker runs every 2 seconds. Any `2xx` is success. Anything else (another status, a timeout after 10 seconds, a refused connection) is a failure: the endpoint stays on that same event and retries after 10 s, 30 s, 2 min, 10 min, 30 min, then hourly; later events wait behind it, so order is kept and nothing is skipped. After 3 days of failures the endpoint is switched off (the card says so, and the owner deletes and re-adds it once the server is back). Redirects are not followed.
+
+**Safety of calling a stranger's address.** The server makes the request, so an address could be aimed at the server's own network or a cloud metadata service. The sender requires `https://`, refuses logins in the address, resolves the host and refuses any non-public address (loopback, private, link-local, carrier-grade NAT, and so on), then connects to the address it just checked rather than looking the name up again, so the name cannot be repointed in between. This runs when the address is added and again on every delivery. Where the operator allows private addresses (`ALLOW_PRIVATE_NODE_ADDRESSES=1`, for a local test network only) plain `http://` to them is allowed too.
+
+**Limits and honest caveats.** Delivery is at least once, not exactly once. Events go to the seller's side only; a buyer-side or arbiter feed is not built. The payload shows the escrow as it is at delivery, so a receiver that is far behind sees newer data than the event's own state, which is why `data.state` is included.
+
+**Verified.** Eight HTTP tests with a stand-in network (needs the key and an account token; secret shown once and sealed at rest; limits; every change delivered once, in order, signed, with the order number and checkout link and no invoice; only changes after the endpoint was added and only its owner's escrows; failure, wait, retry in order and recovery; switch-off after days; the test event); four tests of the real sender against a real local receiver (signature verifiable over the wire as a business would, private and metadata addresses never contacted, a redirect not followed, an unreachable server reported); the store contract for the audit feed and endpoints on memory, SQLite and Postgres; and a browser test where a business adds an address through the page, sends a test, then a customer accepts an offer and the signed `escrow.accepted` arrives at a real listening server exactly once.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

@@ -10,6 +10,9 @@ import {
   Health,
   Invoice,
   ApiKeyList,
+  NewWebhook,
+  WebhookList,
+  WebhookTestResult,
   ArbiterKey,
   Arbitration,
   Me,
@@ -109,6 +112,16 @@ export const api = {
 
   revokeApiKey: (id: string) =>
     request("DELETE", `/api/v1/me/api-keys/${encodeURIComponent(id)}`, z.object({ revoked: z.boolean() })),
+
+  webhooks: () => request("GET", "/api/v1/me/webhooks", WebhookList),
+
+  createWebhook: (url: string) => request("POST", "/api/v1/me/webhooks", NewWebhook, { body: { url } }),
+
+  deleteWebhook: (id: string) =>
+    request("DELETE", `/api/v1/me/webhooks/${encodeURIComponent(id)}`, z.object({ deleted: z.boolean() })),
+
+  testWebhook: (id: string) =>
+    request("POST", `/api/v1/me/webhooks/${encodeURIComponent(id)}/test`, WebhookTestResult),
 
   node: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me/node", NodeInfo, opts),
 

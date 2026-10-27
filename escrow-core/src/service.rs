@@ -185,6 +185,11 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             .any(|e| e.seller_id == seller_id && e.node == NodeKind::Own && e.payment_hash.is_some()))
     }
 
+    /// The position of the newest audit entry, for starting a feed "from now".
+    pub async fn audit_head(&self) -> Result<i64, ServiceError> {
+        Ok(self.store.audit_head().await?)
+    }
+
     pub async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, ServiceError> {
         Ok(self.store.audit_log(id).await?)
     }
