@@ -9,7 +9,7 @@ use axum::{
 use escrow_core::{
     adapter::{NodeConnectError, NodeCredentials, NodeDirectory, NodeSummary},
     fiat::{self, FiatQuote},
-    model::{Escrow, PaymentHash, Preimage, Role, User},
+    model::{ApiKey, Escrow, PaymentHash, Preimage, Role, Scope, User},
     service::{Decision, NewEscrow},
     state::EscrowState,
     store::{Store, UserStore},
@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     arbiter,
     rates::RateError,
-    auth::{hash_token, is_prospective_buyer, new_token, new_user_id, party_of, Auth, Party},
+    auth::{
+        hash_token, is_prospective_buyer, new_api_key, new_api_key_id, new_token, new_user_id, party_of, ApiAuth, Auth, Party,
+    },
     error::ApiError,
     AppState,
 };
@@ -122,8 +124,13 @@ where
 }
 
 /// Who the caller is, so a client holding only a token can learn its id and role.
-pub async fn me(Auth(user): Auth) -> Json<Value> {
-    Json(json!({ "id": user.id, "role": user.role.as_str() }))
+/// Who the credential belongs to. An API key may call this to check that it works.
+pub async fn me(auth: ApiAuth) -> Json<Value> {
+    let mut v = json!({ "id": auth.user.id, "role": auth.user.role.as_str() });
+    if let Some(k) = &auth.key {
+        v["api_key"] = json!({ "id": k.id, "scopes": scope_names(&k.scopes) });
+    }
+    Json(v)
 }
 
 pub async fn register<A, S>(State(st): State<AppState<A, S>>) -> Result<(StatusCode, Json<Value>), ApiError>
@@ -158,7 +165,7 @@ pub struct CreateReq {
 
 pub async fn create_escrow<A, S>(
     State(st): State<AppState<A, S>>,
-    Auth(user): Auth,
+    auth: ApiAuth,
     headers: HeaderMap,
     ApiJson(req): ApiJson<CreateReq>,
 ) -> Result<(StatusCode, Json<Value>), ApiError>
@@ -166,6 +173,8 @@ where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    auth.require(Scope::EscrowsWrite)?;
+    let user = auth.user;
     if user.role == Role::Operator {
         return Err(ApiError::forbidden("operators cannot be a party to an escrow"));
     }
@@ -284,12 +293,14 @@ where
 /// The caller's own escrows (everything in play and the newest that have ended), with totals over all of them.
 pub async fn list_mine<A, S>(
     State(st): State<AppState<A, S>>,
-    Auth(user): Auth,
+    auth: ApiAuth,
 ) -> Result<Json<Value>, ApiError>
 where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    auth.require(Scope::EscrowsRead)?;
+    let user = auth.user;
     let list: Vec<Value> = st
         .service
         .list_for_user(&user.id)
@@ -311,13 +322,15 @@ where
 
 pub async fn get_escrow<A, S>(
     State(st): State<AppState<A, S>>,
-    Auth(user): Auth,
+    auth: ApiAuth,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    auth.require(Scope::EscrowsRead)?;
+    let user = auth.user;
     let (escrow, party) = load(&st, &id, &user).await?;
     Ok(Json(escrow_view(&escrow, party)))
 }
@@ -405,13 +418,15 @@ where
 
 pub async fn cancel<A, S>(
     State(st): State<AppState<A, S>>,
-    Auth(user): Auth,
+    auth: ApiAuth,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    auth.require(Scope::EscrowsWrite)?;
+    let user = auth.user;
     let (escrow, party) = load(&st, &id, &user).await?;
     // Cancelling after the buyer has paid gives the buyer a refund, so the buyer may not do it
     // alone: that would strip the seller's protection. Sellers and operators may.
@@ -463,13 +478,15 @@ where
 
 pub async fn events<A, S>(
     State(st): State<AppState<A, S>>,
-    Auth(user): Auth,
+    auth: ApiAuth,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError>
 where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    auth.require(Scope::EscrowsRead)?;
+    let user = auth.user;
     load(&st, &id, &user).await?;
     let audit: Vec<Value> = st
         .service
@@ -791,4 +808,105 @@ where
         "quoted_at": rate.as_of,
         "source": rate.source,
     })))
+}
+
+// --- API keys -------------------------------------------------------------------------------
+
+/// A person may hold this many working keys at once.
+const MAX_ACTIVE_API_KEYS: usize = 20;
+
+fn scope_names(scopes: &[Scope]) -> Vec<&'static str> {
+    scopes.iter().map(|s| s.as_str()).collect()
+}
+
+fn api_key_view(k: &ApiKey) -> Value {
+    json!({
+        "id": k.id,
+        "name": k.name,
+        "last_chars": k.last_chars,
+        "scopes": scope_names(&k.scopes),
+        "created_at": k.created_at,
+        "last_used_at": k.last_used_at,
+        "revoked_at": k.revoked_at,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct ApiKeyReq {
+    name: String,
+    scopes: Vec<String>,
+}
+
+/// Make a key. The key itself is in this response only; afterwards just its hash is kept.
+pub async fn api_key_create<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    ApiJson(req): ApiJson<ApiKeyReq>,
+) -> Result<(StatusCode, Json<Value>), ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    require_user(&user)?;
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(ApiError::bad_request("invalid_name", "the name must be 1 to 60 characters"));
+    }
+    let mut scopes: Vec<Scope> = Vec::new();
+    for s in &req.scopes {
+        let scope: Scope = s.parse().map_err(|m: String| ApiError::bad_request("invalid_scope", m))?;
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    if scopes.is_empty() {
+        return Err(ApiError::bad_request("invalid_scope", "choose at least one scope"));
+    }
+    let existing = st.users.list_api_keys(&user.id).await?;
+    if existing.iter().filter(|k| k.revoked_at.is_none()).count() >= MAX_ACTIVE_API_KEYS {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "too_many_keys",
+            format!("you already have {MAX_ACTIVE_API_KEYS} working keys; revoke one first"),
+        ));
+    }
+    let secret = new_api_key();
+    let key = ApiKey {
+        id: new_api_key_id(),
+        user_id: user.id.clone(),
+        name: name.to_string(),
+        last_chars: secret[secret.len() - 4..].to_string(),
+        scopes,
+        created_at: (st.now)(),
+        last_used_at: None,
+        revoked_at: None,
+    };
+    st.users.insert_api_key(key.clone(), hash_token(&secret)).await?;
+    let mut v = api_key_view(&key);
+    v["key"] = json!(secret);
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+pub async fn api_key_list<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let keys: Vec<Value> = st.users.list_api_keys(&user.id).await?.iter().map(api_key_view).collect();
+    Ok(Json(json!({ "api_keys": keys })))
+}
+
+pub async fn api_key_revoke<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    if !st.users.revoke_api_key(&user.id, &id, (st.now)()).await? {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such working key"));
+    }
+    Ok(Json(json!({ "revoked": true })))
 }

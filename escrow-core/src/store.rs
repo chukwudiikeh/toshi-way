@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User},
+    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User},
     state::EscrowState,
 };
 
@@ -91,6 +91,15 @@ pub trait UserStore: Send + Sync {
     async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError>;
     /// `true` if there was one to delete.
     async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError>;
+    /// `Conflict` if the id or the key hash already exists.
+    async fn insert_api_key(&self, key: ApiKey, key_hash: String) -> Result<(), StoreError>;
+    /// The key with this hash, revoked or not; the caller checks `revoked_at`.
+    async fn api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, StoreError>;
+    /// All of a user's keys, newest first, revoked ones included.
+    async fn list_api_keys(&self, user_id: &str) -> Result<Vec<ApiKey>, StoreError>;
+    /// Revoke `id` if it belongs to `user_id` and is not revoked yet. `true` if it was revoked now.
+    async fn revoke_api_key(&self, user_id: &str, id: &str, at: i64) -> Result<bool, StoreError>;
+    async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError>;
 }
 
 #[derive(Default)]
@@ -106,6 +115,7 @@ struct MemoryInner {
     users: Vec<(User, String)>,
     node_connections: Vec<NodeConnection>,
     arbiter_keys: Vec<(String, String)>,
+    api_keys: Vec<(ApiKey, String)>,
 }
 
 impl MemoryStore {
@@ -365,6 +375,44 @@ impl UserStore for MemoryStore {
         g.node_connections.retain(|c| c.user_id != user_id);
         Ok(g.node_connections.len() != before)
     }
+
+    async fn insert_api_key(&self, key: ApiKey, key_hash: String) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        if g.api_keys.iter().any(|(k, h)| k.id == key.id || *h == key_hash) {
+            return Err(StoreError::Conflict);
+        }
+        g.api_keys.push((key, key_hash));
+        Ok(())
+    }
+
+    async fn api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, StoreError> {
+        Ok(self.inner.lock().unwrap().api_keys.iter().find(|(_, h)| h == key_hash).map(|(k, _)| k.clone()))
+    }
+
+    async fn list_api_keys(&self, user_id: &str) -> Result<Vec<ApiKey>, StoreError> {
+        let mut list: Vec<ApiKey> =
+            self.inner.lock().unwrap().api_keys.iter().filter(|(k, _)| k.user_id == user_id).map(|(k, _)| k.clone()).collect();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(list)
+    }
+
+    async fn revoke_api_key(&self, user_id: &str, id: &str, at: i64) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        match g.api_keys.iter_mut().find(|(k, _)| k.id == id && k.user_id == user_id && k.revoked_at.is_none()) {
+            Some((k, _)) => {
+                k.revoked_at = Some(at);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError> {
+        if let Some((k, _)) = self.inner.lock().unwrap().api_keys.iter_mut().find(|(k, _)| k.id == id) {
+            k.last_used_at = Some(at);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -392,5 +440,20 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
     }
     async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError> {
         (**self).delete_node_connection(user_id).await
+    }
+    async fn insert_api_key(&self, key: ApiKey, key_hash: String) -> Result<(), StoreError> {
+        (**self).insert_api_key(key, key_hash).await
+    }
+    async fn api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, StoreError> {
+        (**self).api_key_by_hash(key_hash).await
+    }
+    async fn list_api_keys(&self, user_id: &str) -> Result<Vec<ApiKey>, StoreError> {
+        (**self).list_api_keys(user_id).await
+    }
+    async fn revoke_api_key(&self, user_id: &str, id: &str, at: i64) -> Result<bool, StoreError> {
+        (**self).revoke_api_key(user_id, id, at).await
+    }
+    async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError> {
+        (**self).touch_api_key(id, at).await
     }
 }
