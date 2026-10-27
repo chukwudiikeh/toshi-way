@@ -17,6 +17,8 @@
 //!   LND_TLS_CERT     path to tls.cert
 //!   LND_MACAROON     path to a macaroon limited to invoice operations
 //!   CORS_ORIGINS     comma-separated browser origins (default http://localhost:3001,http://127.0.0.1:3001)
+//!   PUBLIC_WEB_URL   the web app's public address (for example https://pay.example.com); with it the API
+//!                    returns a checkout link for each escrow. Off by default.
 //!   RUST_LOG         log filter (default info)
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -133,6 +135,10 @@ where
             .map(|o| o.trim().to_string())
             .filter(|o| !o.is_empty())
             .collect(),
+        web_base_url: std::env::var("PUBLIC_WEB_URL")
+            .ok()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
         ..ApiConfig::default()
     };
     let rates = escrow_api::rates::from_setting(&env("FIAT_PROVIDER", Some("off"))).unwrap_or_else(|e| {

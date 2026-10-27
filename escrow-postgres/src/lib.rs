@@ -22,12 +22,13 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/003_arbitration.sql"),
     include_str!("migrations/004_fiat.sql"),
     include_str!("migrations/005_api_keys.sql"),
+    include_str!("migrations/006_checkout.sql"),
 ];
 
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
      fiat_currency, fiat_amount_minor, fiat_rate_minor, fiat_quoted_at, fiat_source, description, payment_hash, \
-     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
+     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url";
 
 /// Arbitrary constant naming the advisory lock that serialises migrations between instances.
 const MIGRATION_LOCK: i64 = 0x7405_4157;
@@ -124,6 +125,8 @@ fn escrow_from_row(row: &PgRow) -> Result<Escrow, StoreError> {
         deadline_at: row.try_get("deadline_at").map_err(backend)?,
         created_at: row.try_get("created_at").map_err(backend)?,
         updated_at: row.try_get("updated_at").map_err(backend)?,
+        reference: row.try_get("reference").map_err(backend)?,
+        return_url: row.try_get("return_url").map_err(backend)?,
     })
 }
 
@@ -174,7 +177,7 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for PostgresStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
@@ -198,6 +201,8 @@ impl Store for PostgresStore {
         .bind(e.deadline_at)
         .bind(e.created_at)
         .bind(e.updated_at)
+        .bind(&e.reference)
+        .bind(&e.return_url)
         .execute(&self.pool)
         .await;
         match res {

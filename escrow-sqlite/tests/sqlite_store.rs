@@ -51,6 +51,8 @@ async fn full_flow_survives_a_restart_on_a_real_database_file() {
                     buyer_id: Some("buyer".into()),
                     arbiter: None,
                     fiat: None,
+                    reference: None,
+                    return_url: None,
                     seller_id: "seller".into(),
                     amount_sats: 1000,
                     description: "parcel".into(),
@@ -92,6 +94,8 @@ async fn two_escrows_cannot_share_a_payment_hash_even_around_the_service() {
         buyer_id: Some("b".into()),
         arbiter: None,
         fiat: None,
+        reference: None,
+        return_url: None,
         seller_id: "s".into(),
         amount_sats: 1,
         description: "x".into(),
@@ -169,5 +173,5 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
