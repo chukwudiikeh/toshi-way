@@ -251,7 +251,7 @@ pub struct WebhookProgress {
 pub enum Scope {
     /// List and read the account's escrows and their history.
     EscrowsRead,
-    /// Create escrows as the seller, and cancel ones nobody has accepted.
+    /// Create escrows as the seller, and cancel them (after the buyer has paid, that refunds the buyer).
     EscrowsWrite,
 }
 

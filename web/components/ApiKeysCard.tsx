@@ -8,7 +8,7 @@ import { Button, Card, ConfirmButton, CopyField, Field, inputClass, Notice, Spin
 
 const scopeChoices = [
   { id: "escrows:read", label: "Read escrows", note: "List escrows and see their status and history." },
-  { id: "escrows:write", label: "Create and cancel escrows", note: "Make offers as the seller, and cancel ones nobody has accepted." },
+  { id: "escrows:write", label: "Create and cancel escrows", note: "Make offers as the seller, and cancel them. Cancelling after the buyer has paid refunds the buyer." },
 ];
 
 const scopeLabel = (id: string) => scopeChoices.find((s) => s.id === id)?.label ?? id;
