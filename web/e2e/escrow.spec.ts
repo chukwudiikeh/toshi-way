@@ -704,3 +704,40 @@ test("backup: a buyer's release secret survives a new device through the backup 
   await expect(other.getByText("Restored 1 item.")).toBeVisible();
   expect(await other.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id)).toBe(secret);
 });
+
+test("API keys: a business makes a key, its software uses it, and revoking stops it", async ({ browser }) => {
+  const shop = await newParty(browser);
+  const { page } = shop;
+  await page.goto("/account");
+
+  await page.getByLabel("Key name").fill("Online shop");
+  await page.getByRole("button", { name: "Make key" }).click();
+  await expect(page.getByText("Copy this key now.")).toBeVisible();
+  const key = (await page.locator("code", { hasText: /^tk_/ }).first().textContent())!.trim();
+  expect(key).toMatch(/^tk_[0-9a-f]{64}$/);
+  await page.getByRole("button", { name: "I have copied it" }).click();
+
+  // The list shows the key by its last characters only, and never the key itself.
+  await expect(page.getByText(`tk_…${key.slice(-4)}`)).toBeVisible();
+  await expect(page.getByText(key)).toHaveCount(0);
+
+  // The business's own software calls the API with it, not with the account token.
+  const call = (method: "get" | "post", path: string, data?: object) =>
+    page.request[method](path, {
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      ...(data ? { data } : {}),
+    });
+  const made = await call("post", "/api/v1/escrows", { amount_sats: 1000, description: "order 1001", hold_secs: 3600 });
+  expect(made.status()).toBe(201);
+  expect((await made.json()).seller_id).toBe(shop.id);
+  expect((await call("get", "/api/v1/escrows")).status()).toBe(200);
+  // Keys are closed out of the account and the node.
+  expect((await call("get", "/api/v1/me/node")).status()).toBe(403);
+  expect((await call("get", "/api/v1/me/api-keys")).status()).toBe(403);
+
+  // Revoke it: the very next call is refused.
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  await page.getByRole("button", { name: "Revoke key" }).click();
+  await expect(page.getByText(/revoked/)).toBeVisible();
+  expect((await call("get", "/api/v1/escrows")).status()).toBe(401);
+});

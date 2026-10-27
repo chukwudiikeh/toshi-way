@@ -5,7 +5,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use escrow_core::{
     fiat::FiatQuote,
-    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, User},
+    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Scope, User},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore, UserTotals},
 };
@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/003_own_nodes.sql"),
     include_str!("migrations/004_arbitration.sql"),
     include_str!("migrations/005_fiat.sql"),
+    include_str!("migrations/006_api_keys.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
@@ -525,6 +526,72 @@ impl UserStore for SqliteStore {
             .map_err(backend)?;
         Ok(res.rows_affected() > 0)
     }
+
+    async fn insert_api_key(&self, key: ApiKey, key_hash: String) -> Result<(), StoreError> {
+        let res = sqlx::query(
+            "INSERT INTO api_keys (id, user_id, name, key_hash, last_chars, scopes, created_at, last_used_at, revoked_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&key.id)
+        .bind(&key.user_id)
+        .bind(&key.name)
+        .bind(&key_hash)
+        .bind(&key.last_chars)
+        .bind(scopes_to_text(&key.scopes))
+        .bind(key.created_at)
+        .bind(key.last_used_at)
+        .bind(key.revoked_at)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(StoreError::Conflict),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    async fn api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>, StoreError> {
+        let row = sqlx::query(&format!("SELECT {API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ?"))
+            .bind(key_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(api_key_from_row).transpose()
+    }
+
+    async fn list_api_keys(&self, user_id: &str) -> Result<Vec<ApiKey>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE user_id = ? ORDER BY created_at DESC, id ASC"
+        ))
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(api_key_from_row).collect()
+    }
+
+    async fn revoke_api_key(&self, user_id: &str, id: &str, at: i64) -> Result<bool, StoreError> {
+        let res = sqlx::query(
+            "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(at)
+        .bind(id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError> {
+        sqlx::query("UPDATE api_keys SET last_used_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
 }
 
 /// The terminal states as a SQL list such as `'SETTLED', 'REFUNDED'`. They are fixed names, never input.
@@ -535,4 +602,24 @@ fn ended_states() -> String {
         .map(|s| format!("'{}'", s.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+const API_KEY_COLUMNS: &str = "id, user_id, name, last_chars, scopes, created_at, last_used_at, revoked_at";
+
+fn scopes_to_text(scopes: &[Scope]) -> String {
+    scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+}
+
+fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
+    let scopes: String = row.try_get("scopes").map_err(backend)?;
+    Ok(ApiKey {
+        id: row.try_get("id").map_err(backend)?,
+        user_id: row.try_get("user_id").map_err(backend)?,
+        name: row.try_get("name").map_err(backend)?,
+        last_chars: row.try_get("last_chars").map_err(backend)?,
+        scopes: scopes.split(',').filter(|s| !s.is_empty()).map(|s| s.parse().map_err(StoreError::Backend)).collect::<Result<_, _>>()?,
+        created_at: row.try_get("created_at").map_err(backend)?,
+        last_used_at: row.try_get("last_used_at").map_err(backend)?,
+        revoked_at: row.try_get("revoked_at").map_err(backend)?,
+    })
 }

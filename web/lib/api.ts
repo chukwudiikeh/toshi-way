@@ -9,12 +9,14 @@ import {
   EscrowList,
   Health,
   Invoice,
+  ApiKeyList,
   ArbiterKey,
   Arbitration,
   Me,
   RateQuote,
   RatesInfo,
   NodeInfo,
+  NewApiKey,
   NewUser,
   type NewEscrowRequest,
 } from "./schemas";
@@ -100,6 +102,13 @@ export const api = {
   register: () => request("POST", "/api/v1/users", NewUser, { token: null }),
 
   me: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me", Me, opts),
+
+  apiKeys: () => request("GET", "/api/v1/me/api-keys", ApiKeyList),
+
+  createApiKey: (body: { name: string; scopes: string[] }) => request("POST", "/api/v1/me/api-keys", NewApiKey, { body }),
+
+  revokeApiKey: (id: string) =>
+    request("DELETE", `/api/v1/me/api-keys/${encodeURIComponent(id)}`, z.object({ revoked: z.boolean() })),
 
   node: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me/node", NodeInfo, opts),
 
