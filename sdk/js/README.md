@@ -4,7 +4,15 @@ A small JavaScript client for the toshi-way escrow API. It makes and reads escro
 
 The full API reference, including webhooks and error codes, is in [`docs/api.md`](../../docs/api.md). Field names here are the API's own (`amount_sats`, `hold_secs`, ...), so the reference applies word for word.
 
-> Not published to npm yet. Use it from this folder (`import { Toshi } from "./sdk/js/src/index.js"`) or copy `src/`.
+> Not published to npm yet. To use it in a project, pack it and install the file:
+>
+> ```bash
+> cd sdk/js && npm pack                       # makes toshi-way-client-0.1.0.tgz
+> cd your-project && npm install ../path/to/toshi-way-client-0.1.0.tgz
+> ```
+>
+> or import it by path (`import { Toshi } from "./sdk/js/src/index.js"`), or copy `src/`. A complete Next.js shop
+> is in [`examples/nextjs-shop`](examples/nextjs-shop).
 
 ## Make an offer
 
