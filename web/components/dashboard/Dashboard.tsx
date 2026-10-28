@@ -5,11 +5,11 @@ import { useEffect, useMemo, useState } from "react";
 import { api, describeError } from "@/lib/api";
 import { serverNow, useServerNow } from "@/lib/clock";
 import { greeting, summarize, todos } from "@/lib/dashboard";
-import type { ArbiterKey, Escrow, NodeInfo, Totals } from "@/lib/schemas";
+import type { ArbiterKey, Balance, Escrow, NodeInfo, Totals } from "@/lib/schemas";
 import { rememberUserId, type Session } from "@/lib/session";
 import { Notice, Spinner } from "../ui";
 import { EscrowTable } from "./EscrowTable";
-import { AccountCard, Activity, ArbiterCard, Attention, NodeCard, StatCards } from "./Widgets";
+import { AccountCard, Activity, ArbiterCard, Attention, BalanceCard, NodeCard, StatCards } from "./Widgets";
 
 /** What a signed-in buyer, seller or arbiter sees first: where things stand, and what needs them. */
 export function Dashboard({ session }: { session: Session }) {
@@ -18,6 +18,7 @@ export function Dashboard({ session }: { session: Session }) {
   const [error, setError] = useState<string | null>(null);
   const [node, setNode] = useState<NodeInfo | null>(null);
   const [arbiterKey, setArbiterKey] = useState<ArbiterKey | null>(null);
+  const [balance, setBalance] = useState<Balance | null>(null);
   const tick = useServerNow();
   const now = Math.floor(tick ?? serverNow());
 
@@ -34,6 +35,7 @@ export function Dashboard({ session }: { session: Session }) {
         const party = escrows.find((e) => e.your_role === "buyer" || e.your_role === "seller");
         const myId = party && (party.your_role === "buyer" ? party.buyer_id : party.seller_id);
         if (myId) rememberUserId(myId);
+        api.balance().then((b) => alive && setBalance(b)).catch(() => {});
       } catch (err) {
         if (alive) setError(describeError(err));
       }
@@ -95,6 +97,7 @@ export function Dashboard({ session }: { session: Session }) {
             </div>
             <aside className="min-w-0 space-y-4">
               <AccountCard userId={session.userId} />
+              <BalanceCard balance={balance} />
               <NodeCard node={node} />
               <ArbiterCard key_={arbiterKey} asArbiter={asArbiter} />
               <Activity escrows={escrows} now={now} />

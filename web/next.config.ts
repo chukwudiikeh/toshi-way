@@ -17,6 +17,8 @@ const nextConfig: NextConfig = {
     ];
   },
   /* config options here */
+  // The dev server only serves its assets to hosts it knows; let an ngrok tunnel share the demo.
+  allowedDevOrigins: ["*.ngrok-free.app", "*.ngrok-free.dev", "*.ngrok.app", "*.ngrok.dev"],
   // The "N" route indicator is dev-only noise on a projector; compile and runtime errors still show.
   devIndicators: false,
   cacheComponents: true,

@@ -85,3 +85,10 @@ export const ArrowIcon = (p: P) => (
     <path d="M5 12h14m-5-5 5 5-5 5" />
   </Icon>
 );
+export const WalletIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3" />
+    <rect x="4" y="8" width="16" height="11" rx="2.5" />
+    <path d="M16 13.5h.01" />
+  </Icon>
+);

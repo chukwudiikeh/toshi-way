@@ -10,6 +10,8 @@
 #   ./scripts/demo-env.sh repair    wipe the Lightning network and the demo state, for when Docker comes back broken
 #                                   after a restart ("RWLayer ... is unexpectedly nil"); then run `up` again
 #
+#   PUBLIC_URL=https://you.ngrok-free.dev ./scripts/demo-env.sh up   also let the demo wallet answer a tunnelled page
+#
 # Local regtest only. State lives in .demo/ (gitignored): the operator token, the key that encrypts
 # sellers' node credentials, the database, logs, pids, and the seeded accounts with their tokens.
 set -euo pipefail
@@ -121,18 +123,29 @@ start_server() {
   # process and nothing keeps this script's output pipe open after it exits.
   # A room full of people behind one network address would trip the default 10 sign-ups a minute.
   # Regtest has no market, so the fiat values use fixed, clearly labelled "demo rate"s.
+  # Sellers on the shared node get a balance they can withdraw, and naira payments go through the
+  # pretend "demo" provider, whose Lightning side is the buyer node. Setup bakes both macaroons.
+  local payout=""
+  [ -f regtest/creds/seller/payout.macaroon ] && payout="regtest/creds/seller/payout.macaroon"
+  [ -n "$payout" ] || warn "no regtest/creds/seller/payout.macaroon: balances can't be withdrawn (re-run regtest/setup.sh)"
+  local ramp=off
+  [ -f regtest/creds/buyer/payout.macaroon ] && ramp="${RAMP_PROVIDER:-demo}"
   ( exec env DATABASE_PATH="$DEMO/toshi.db" ALLOW_PRIVATE_NODE_ADDRESSES=1 REGISTER_LIMIT_PER_MIN=200 \
       FIAT_PROVIDER="${FIAT_PROVIDER:-fixed:USD=65000,EUR=60000,GBP=51000,NGN=97500000}" \
+      PAYOUT_MACAROON="$payout" RAMP_PROVIDER="$ramp" \
       ./target/debug/toshi-server ) \
     > "$DEMO/server.log" 2>&1 < /dev/null &
   echo $! > "$DEMO/server.pid"
   wait_http server "$API/health" 40
 }
 
-# In a Codespace the page is opened through a forwarded address, not localhost. The demo wallet only
-# answers requests from the web app, so tell it that address as well.
+# In a Codespace (or through a tunnel such as ngrok, given as PUBLIC_URL) the page is opened through
+# a forwarded address, not localhost. The demo wallet only answers requests from the web app, so tell
+# it that address as well.
 public_origin() {
-  if [ -n "${CODESPACE_NAME:-}" ] && [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
+  if [ -n "${PUBLIC_URL:-}" ]; then
+    echo "${PUBLIC_URL%/}"
+  elif [ -n "${CODESPACE_NAME:-}" ] && [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
     echo "https://${CODESPACE_NAME}-3001.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
   fi
 }

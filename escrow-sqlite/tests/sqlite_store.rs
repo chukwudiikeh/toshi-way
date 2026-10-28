@@ -173,5 +173,76 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
+}
+
+#[tokio::test]
+async fn sqlite_store_meets_the_payout_store_contract() {
+    escrow_core::testing::payout_store_contract(&SqliteStore::in_memory().await.unwrap()).await;
+}
+
+#[tokio::test]
+async fn concurrent_withdrawals_on_a_database_file_cannot_spend_the_same_sats_twice() {
+    use escrow_core::{
+        model::{Escrow, NodeKind, Withdrawal, WithdrawalKind, WithdrawalState},
+        store::PayoutStore,
+    };
+    let store = Arc::new(SqliteStore::open(&temp_db("withdrawal-race")).await.unwrap());
+    store
+        .insert(Escrow {
+            id: "earned".into(),
+            buyer_id: Some("buyer".into()),
+            seller_id: "seller".into(),
+            arbiter_id: None,
+            arbiter_key: None,
+            arbiter_sealed: None,
+            arbiter_confirmed_at: None,
+            node: NodeKind::Shared,
+            amount_sats: 5_000,
+            fiat: None,
+            reference: None,
+            return_url: None,
+            description: "race".into(),
+            payment_hash: None,
+            invoice: None,
+            invoice_expires_at: None,
+            state: EscrowState::Settled,
+            deadline_at: T0 + 3600,
+            created_at: T0,
+            updated_at: T0,
+        })
+        .await
+        .unwrap();
+    let tasks: Vec<_> = (0..10u8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .insert_withdrawal(Withdrawal {
+                        id: format!("w{i}"),
+                        user_id: "seller".into(),
+                        kind: WithdrawalKind::Lightning,
+                        amount_sats: 1_000,
+                        fee_limit_sats: 10,
+                        fee_sats: None,
+                        invoice: format!("lnbcrt{i}"),
+                        payment_hash: [i; 32],
+                        state: WithdrawalState::Pending,
+                        failure: None,
+                        created_at: T0,
+                        updated_at: T0,
+                    })
+                    .await
+            })
+        })
+        .collect();
+    let mut accepted = 0;
+    for t in tasks {
+        // A writer that found the database busy fails cleanly rather than overspending.
+        if let Ok(true) = t.await.unwrap() {
+            accepted += 1;
+        }
+    }
+    assert!(accepted <= 4, "{accepted} withdrawals were accepted");
+    assert!(store.ledger_totals("seller").await.unwrap().available() >= 5_000 - 4 * 1_010);
 }

@@ -703,6 +703,18 @@ The last step: a business's developer should be able to integrate in an afternoo
 
 ---
 
+## 33. Balances, withdrawals and paying in naira
+
+Asked for: sellers should see a balance when funds are released and withdraw it whenever they like; buyers with only naira should be able to pay, and sellers should be able to withdraw to a Nigerian bank. Decided with the user: balances only for sellers on the shared node (own-node sellers are already paid directly); the ramp as a provider interface with a labelled demo provider; refunds of a naira payment go back to the buyer's bank in naira. Design and endpoints are in `docs/project.md` ("Balances and withdrawals", "Paying and getting paid in naira").
+
+**Built.** `escrow-core`: `payout.rs` (`Wallet` trait, `PayoutService`: balance, withdraw, sync) and `ramp.rs` (`RampProvider`, `RampService` with the on- and off-ramp state machines, `DemoRamp`, the list of Nigerian banks with their NIP codes); a `PayoutStore` contract run on memory, SQLite (migration 9) and Postgres (migration 8). `escrow-lnd`: LND as a `Wallet` (decode, pay with a fee limit, track, add invoice) and a payouts loop every 2 seconds. `escrow-api`: the balance, withdrawal and ramp endpoints. `regtest/setup.sh` bakes `payout.macaroon` on the seller (shared) and buyer (demo provider) nodes. Web: a Balance page (totals, withdraw to a Lightning wallet or to a bank, history), a balance card on the dashboard, and "Pay in naira" on the buyer's escrow panel (quote, bank and name check, transfer details with a countdown, then the payment's progress and any refund). The demo wallet can now make an invoice (`POST /invoice`), so a seller can withdraw in a demo; `demo-env.sh` turns payouts and the demo ramp on, and `PUBLIC_URL` lets the demo wallet answer a tunnelled page.
+
+**Verified.** 12 core tests (balance and withdrawal, validation, a failed and a lost payment, quotes, on-ramp paid, refunded, expired, paid another way, buyer only, off-ramp paid and failed), the store contract plus a ten-way withdrawal race on SQLite and Postgres, 5 HTTP tests, and `cargo test --workspace`; web types and lint are clean. End to end on regtest through the API: a buyer paid a 20,000-sat escrow with ₦19,792.50 (fee ₦292.50 at the demo rate), the provider's node paid the hold invoice and it locked; after release the seller's balance was 20,000 sats; a 5,000-sat Lightning withdrawal to the demo wallet cost 1 sat in fees; a 10,000-sat bank withdrawal paid out ₦9,603.75 (reference `DEMO-PAYOUT-…`); the final balance, 4,998 sats, matched to the sat.
+
+**Not done.** No real provider (it needs a licensed partner, its API and a webhook for incoming transfers). No browser (Playwright) test for the new screens yet. A deposit that arrives after its window closes is not handled by the demo provider; a real one would refund it.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

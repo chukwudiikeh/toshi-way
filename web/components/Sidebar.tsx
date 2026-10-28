@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { clearSession, useSession, useVaultState } from "@/lib/session";
-import { BoltIcon, KeyIcon, ScaleIcon, ShieldIcon } from "./landing/icons";
+import { BoltIcon, KeyIcon, ScaleIcon, ShieldIcon, WalletIcon } from "./landing/icons";
 
 type NodeStatus = "up" | "down" | "unreachable" | null;
 
@@ -130,6 +130,7 @@ export function Sidebar() {
                   <>
                     <NavLink href="/" icon={<GridIcon />} onClick={close}>Dashboard</NavLink>
                     <NavLink href="/escrows/new" icon={<BoltIcon />} onClick={close}>New escrow</NavLink>
+                    <NavLink href="/balance" icon={<WalletIcon />} onClick={close}>Balance</NavLink>
                     <NavLink href="/node" icon={<KeyIcon />} onClick={close}>My node</NavLink>
                     <NavLink href="/arbiter" icon={<ScaleIcon />} onClick={close}>Arbiter</NavLink>
                     <NavLink href="/account" icon={<ShieldIcon />} onClick={close}>Account</NavLink>

@@ -21,6 +21,15 @@ import {
   NodeInfo,
   NewApiKey,
   NewUser,
+  Balance,
+  Withdrawal,
+  WithdrawalList,
+  RampInfo,
+  ResolvedAccount,
+  RampQuote,
+  RampOrder,
+  RampOrderList,
+  EscrowRampOrder,
   type NewEscrowRequest,
 } from "./schemas";
 import { getSession, removeVault } from "./session";
@@ -176,9 +185,48 @@ export const api = {
 
   events: (id: string) => request("GET", `${esc(id)}/events`, EscrowEvents),
 
+  /** What the service owes you from escrows settled on its shared node. */
+  balance: () => request("GET", "/api/v1/me/balance", Balance),
+
+  withdrawals: () => request("GET", "/api/v1/me/withdrawals", WithdrawalList),
+
+  /** Pay a Lightning invoice out of your balance; the invoice sets the amount. */
+  withdraw: (invoice: string) => request("POST", "/api/v1/me/withdrawals", Withdrawal, { body: { invoice } }),
+
+  /** Whether paying and getting paid in naira is offered, and to which banks. */
+  rampInfo: () => request("GET", "/api/v1/ramp", RampInfo),
+
+  /** The account holder's name, so people can check it before any money moves. */
+  resolveAccount: (bank_code: string, account_number: string) =>
+    request("POST", "/api/v1/ramp/resolve", ResolvedAccount, { body: { bank_code, account_number } }),
+
+  rampQuote: (direction: "onramp" | "offramp", amount_sats: number) =>
+    request("POST", "/api/v1/ramp/quote", RampQuote, { body: { direction, amount_sats } }),
+
+  /** Pay an escrow by bank transfer. The account given is where a refund goes. */
+  startOnramp: (id: string, bank_code: string, account_number: string) =>
+    request("POST", `${esc(id)}/onramp`, RampOrder, { body: { bank_code, account_number } }),
+
+  onramp: (id: string) => request("GET", `${esc(id)}/onramp`, EscrowRampOrder),
+
+  /** Send part of your balance to your bank account, in naira. */
+  startOfframp: (amount_sats: number, bank_code: string, account_number: string) =>
+    request("POST", "/api/v1/ramp/offramp", RampOrder, { body: { amount_sats, bank_code, account_number } }),
+
+  rampOrders: () => request("GET", "/api/v1/ramp/orders", RampOrderList),
+
+  /** Demo provider only: pretend the bank transfer arrived. */
+  demoDeposit: (orderId: string) =>
+    request("POST", `/api/v1/ramp/orders/${encodeURIComponent(orderId)}/demo-deposit`, RampOrder),
+
   operatorQueue: (opts?: Pick<Options, "token" | "keepSessionOn401">) =>
     request("GET", "/api/v1/operator/escrows", EscrowList, opts),
 };
+
+/** The server's short lower-case messages, as a sentence. */
+function sentence(m: string): string {
+  return m.charAt(0).toUpperCase() + m.slice(1) + (/[.!?]$/.test(m) ? "" : ".");
+}
 
 /** A message suitable for showing to the user. */
 export function describeError(err: unknown): string {
@@ -219,6 +267,21 @@ export function describeError(err: unknown): string {
     case "invalid_preimage":
     case "invalid_hex":
       return "The secret must be exactly 64 hex characters.";
+    case "insufficient_balance":
+      return "Your balance doesn't cover that amount plus the routing-fee allowance. Try a smaller amount.";
+    case "invalid_invoice":
+    case "invalid_request":
+      return sentence(err.message);
+    case "duplicate_invoice":
+      return "That invoice has already been used for a withdrawal. Make a new one.";
+    case "payouts_unavailable":
+      return "This server doesn't hold balances, so there is nothing to withdraw here.";
+    case "ramp_unavailable":
+      return "Paying in naira isn't offered on this server.";
+    case "provider_unavailable":
+      return "The bank payment provider is unavailable right now. Nothing has changed; try again shortly.";
+    case "provider_rejected":
+      return "The bank payment provider turned that down: " + err.message.replace(/^.*?: /, "");
     case "too_late":
       return "The deadline has passed, so this is no longer possible. The buyer will be refunded.";
     default:

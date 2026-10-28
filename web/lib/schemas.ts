@@ -279,3 +279,133 @@ export const DisputeForm = z
   .trim()
   .min(1, "Say what went wrong")
   .max(500, "At most 500 characters");
+
+// Balances, withdrawals and paying in naira.
+
+/** What the service owes a seller whose escrows settled on its shared node. */
+export const Balance = z.union([
+  z.object({
+    payouts: z.literal(true),
+    available_sats: z.number().int(),
+    earned_sats: z.number().int(),
+    /** Set aside for withdrawals still on their way. */
+    held_sats: z.number().int(),
+    withdrawn_sats: z.number().int(),
+    fee_allowance: z.object({ percent: z.number(), min_sats: z.number().int() }),
+    offramp: z.boolean(),
+  }),
+  z.object({ payouts: z.literal(false) }),
+]);
+export type Balance = z.infer<typeof Balance>;
+
+export const Withdrawal = z.object({
+  id: z.string(),
+  kind: z.enum(["lightning", "bank"]),
+  amount_sats: z.number().int(),
+  fee_limit_sats: z.number().int(),
+  fee_sats: z.number().int().nullable(),
+  state: z.enum(["pending", "succeeded", "failed"]),
+  failure: z.string().nullable(),
+  payment_hash: z.string(),
+  created_at: unixSecs,
+  updated_at: unixSecs,
+});
+export type Withdrawal = z.infer<typeof Withdrawal>;
+export const WithdrawalList = z.object({ withdrawals: z.array(Withdrawal) });
+
+export const BankInfo = z.object({ code: z.string(), name: z.string() });
+export type BankInfo = z.infer<typeof BankInfo>;
+
+export const RampInfo = z.union([
+  z.object({
+    enabled: z.literal(true),
+    provider: z.string(),
+    /** A pretend provider: no real money moves. */
+    demo: z.boolean(),
+    currency: z.string(),
+    exponent: z.number().int(),
+    fee_bps: z.number().int(),
+    min_sats: z.number().int(),
+    rate_minor_per_btc: z.number().int().nullable(),
+    rate_source: z.string().nullable(),
+    offramp: z.boolean(),
+    banks: z.array(BankInfo),
+  }),
+  z.object({ enabled: z.literal(false) }),
+]);
+export type RampInfo = z.infer<typeof RampInfo>;
+
+export const ResolvedAccount = z.object({
+  bank_code: z.string(),
+  bank_name: z.string(),
+  account_number: z.string(),
+  account_name: z.string(),
+});
+export type ResolvedAccount = z.infer<typeof ResolvedAccount>;
+
+export const RampQuote = z.object({
+  direction: z.enum(["onramp", "offramp"]),
+  amount_sats: z.number().int(),
+  currency: z.string(),
+  exponent: z.number().int(),
+  /** What the buyer pays, or what reaches the seller's bank, fee included. */
+  fiat_minor: z.number().int(),
+  fee_minor: z.number().int(),
+  rate_minor_per_btc: z.number().int(),
+});
+export type RampQuote = z.infer<typeof RampQuote>;
+
+export const RAMP_STATES = [
+  "awaiting_deposit",
+  "deposit_received",
+  "paying",
+  "funded",
+  "complete",
+  "refunding",
+  "refunded",
+  "expired",
+  "sending_sats",
+  "paying_out",
+  "paid_out",
+  "failed",
+] as const;
+export type RampState = (typeof RAMP_STATES)[number];
+
+export const RampOrder = z.object({
+  id: z.string(),
+  direction: z.enum(["onramp", "offramp"]),
+  escrow_id: z.string().nullable(),
+  withdrawal_id: z.string().nullable(),
+  amount_sats: z.number().int(),
+  currency: z.string(),
+  exponent: z.number().int(),
+  fiat_minor: z.number().int(),
+  fee_minor: z.number().int(),
+  rate_minor_per_btc: z.number().int(),
+  /** The person's own account: where a refund or payout goes. The number is masked. */
+  bank: z.object({ bank_code: z.string(), bank_name: z.string(), account_number: z.string(), account_name: z.string() }),
+  /** Where the buyer sends the transfer, for a naira payment. */
+  deposit: z
+    .object({
+      bank_name: z.string(),
+      account_number: z.string(),
+      account_name: z.string(),
+      reference: z.string(),
+      expires_at: unixSecs,
+    })
+    .nullable(),
+  provider: z.string(),
+  fiat_reference: z.string().nullable(),
+  state: z.enum(RAMP_STATES),
+  note: z.string().nullable(),
+  created_at: unixSecs,
+  updated_at: unixSecs,
+});
+export type RampOrder = z.infer<typeof RampOrder>;
+export const RampOrderList = z.object({ orders: z.array(RampOrder) });
+export const EscrowRampOrder = z.object({ order: RampOrder.nullable() });
+
+export const NUBAN = z
+  .string()
+  .trim()
+  .regex(/^\d{10}$/, "A Nigerian account number is 10 digits");

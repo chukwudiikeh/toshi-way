@@ -407,3 +407,145 @@ pub async fn user_store_contract(store: &dyn UserStore) {
     assert!(!store.delete_node_connection("alice").await.unwrap(), "nothing left to delete");
     assert_eq!(store.node_connection("alice").await.unwrap(), None);
 }
+
+fn withdrawal(id: &str, user: &str, amount: u64, hash: u8, at: i64) -> crate::model::Withdrawal {
+    crate::model::Withdrawal {
+        id: id.into(),
+        user_id: user.into(),
+        kind: crate::model::WithdrawalKind::Lightning,
+        amount_sats: amount,
+        fee_limit_sats: crate::payout::fee_limit(amount),
+        fee_sats: None,
+        invoice: format!("lnbcrt{id}"),
+        payment_hash: [hash; 32],
+        state: crate::model::WithdrawalState::Pending,
+        failure: None,
+        created_at: at,
+        updated_at: at,
+    }
+}
+
+fn ramp_order(id: &str, escrow: Option<&str>, at: i64) -> crate::model::RampOrder {
+    use crate::model::{BankAccount, DepositInstructions, RampDirection, RampOrder, RampState};
+    RampOrder {
+        id: id.into(),
+        user_id: "buyer".into(),
+        direction: if escrow.is_some() { RampDirection::On } else { RampDirection::Off },
+        escrow_id: escrow.map(str::to_string),
+        withdrawal_id: escrow.is_none().then(|| "w-1".to_string()),
+        amount_sats: 5_000,
+        currency: "NGN".into(),
+        fiat_minor: 494_813,
+        fee_minor: 7_313,
+        rate_minor_per_btc: 9_750_000_000,
+        bank: BankAccount {
+            bank_code: "058".into(),
+            bank_name: "Guaranty Trust Bank".into(),
+            account_number: "0123456789".into(),
+            account_name: "ADA OBI".into(),
+        },
+        deposit: escrow.map(|_| DepositInstructions {
+            bank_name: "Demo Bank".into(),
+            account_number: "9912345678".into(),
+            account_name: "TOSHI RAMP DEMO".into(),
+            reference: "TW-ABCDEF12".into(),
+            expires_at: at + 500,
+        }),
+        provider: "demo".into(),
+        fiat_reference: None,
+        state: if escrow.is_some() { RampState::AwaitingDeposit } else { RampState::SendingSats },
+        note: None,
+        created_at: at,
+        updated_at: at,
+    }
+}
+
+/// Behaviour every [`crate::store::PayoutStore`] must provide: balances that come only from settled
+/// shared-node escrows, a balance check that cannot be raced, and ramp orders that round-trip.
+pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: &S) {
+    use crate::{
+        model::{RampState, WithdrawalState as W},
+        store::RampUpdate,
+    };
+
+    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 0);
+
+    // Only settled escrows on the shared node, where they are the seller, count.
+    let mut earned = escrow("earned");
+    earned.state = EscrowState::Settled;
+    earned.amount_sats = 10_000;
+    let mut own = escrow("own-node");
+    own.state = EscrowState::Settled;
+    own.node = NodeKind::Own;
+    let mut locked = escrow("still-locked");
+    locked.state = EscrowState::Locked;
+    let mut bought = escrow("bought");
+    bought.state = EscrowState::Settled;
+    bought.seller_id = "someone-else".into();
+    bought.buyer_id = Some("seller".into());
+    for e in [earned, own, locked, bought] {
+        store.insert(e).await.unwrap();
+    }
+    let t = store.ledger_totals("seller").await.unwrap();
+    assert_eq!((t.earned_sats, t.held_sats, t.withdrawn_sats, t.available()), (10_000, 0, 0, 10_000));
+
+    // A pending withdrawal holds its amount and fee allowance (9,000 + 90).
+    assert!(store.insert_withdrawal(withdrawal("w1", "seller", 9_000, 1, 200)).await.unwrap());
+    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 910);
+    // More than what is left is refused, and changes nothing.
+    assert!(!store.insert_withdrawal(withdrawal("w2", "seller", 1_000, 2, 201)).await.unwrap());
+    assert_eq!(store.get_withdrawal("w2").await.unwrap(), None);
+    // The same invoice cannot be paid twice, nor the same id reused.
+    assert_eq!(store.insert_withdrawal(withdrawal("w3", "seller", 10, 1, 202)).await, Err(StoreError::Conflict));
+    assert_eq!(store.insert_withdrawal(withdrawal("w1", "seller", 10, 9, 202)).await, Err(StoreError::Conflict));
+    assert_eq!(store.pending_withdrawals().await.unwrap().len(), 1);
+
+    // Success charges the fee actually paid; it can only finish once.
+    assert!(store.finish_withdrawal("w1", W::Succeeded, Some(3), None, 300).await.unwrap());
+    assert!(!store.finish_withdrawal("w1", W::Failed, None, Some("late".into()), 301).await.unwrap());
+    let w1 = store.get_withdrawal("w1").await.unwrap().unwrap();
+    assert_eq!((w1.state, w1.fee_sats, w1.updated_at), (W::Succeeded, Some(3), 300));
+    let t = store.ledger_totals("seller").await.unwrap();
+    assert_eq!((t.held_sats, t.withdrawn_sats, t.available()), (0, 9_003, 997));
+
+    // A failure gives the sats back, and the same invoice may then be tried again.
+    assert!(store.insert_withdrawal(withdrawal("w4", "seller", 500, 4, 400)).await.unwrap());
+    assert!(store.finish_withdrawal("w4", W::Failed, None, Some("no route".into()), 401).await.unwrap());
+    assert_eq!(store.get_withdrawal("w4").await.unwrap().unwrap().failure.as_deref(), Some("no route"));
+    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 997);
+    assert!(store.insert_withdrawal(withdrawal("w5", "seller", 500, 4, 500)).await.unwrap());
+    let ids: Vec<String> = store.list_withdrawals("seller").await.unwrap().into_iter().map(|w| w.id).collect();
+    assert_eq!(ids, ["w5", "w4", "w1"], "newest first");
+    assert!(store.list_withdrawals("buyer").await.unwrap().is_empty());
+
+    // Ramp orders round-trip, bank details and deposit instructions included.
+    let on = ramp_order("r1", Some("earned"), 100);
+    store.insert_ramp_order(on.clone()).await.unwrap();
+    assert_eq!(store.get_ramp_order("r1").await.unwrap(), Some(on.clone()));
+    let off = ramp_order("r2", None, 110);
+    store.insert_ramp_order(off.clone()).await.unwrap();
+    assert_eq!(store.get_ramp_order("r2").await.unwrap(), Some(off));
+    assert_eq!(store.insert_ramp_order(ramp_order("r1", None, 120)).await, Err(StoreError::Conflict));
+    // One order in progress per escrow.
+    assert_eq!(store.insert_ramp_order(ramp_order("r3", Some("earned"), 130)).await, Err(StoreError::Conflict));
+
+    // Compare-and-set on the state; the note and reference are kept.
+    let upd = RampUpdate { note: Some("expired".into()), fiat_reference: Some("REF-1".into()) };
+    assert!(!store.update_ramp_order("r1", RampState::Paying, RampState::Expired, upd.clone(), 140).await.unwrap());
+    assert!(store.update_ramp_order("r1", RampState::AwaitingDeposit, RampState::Expired, upd, 140).await.unwrap());
+    let r1 = store.get_ramp_order("r1").await.unwrap().unwrap();
+    assert_eq!((r1.state, r1.note.as_deref(), r1.fiat_reference.as_deref(), r1.updated_at), (RampState::Expired, Some("expired"), Some("REF-1"), 140));
+    let keep = RampUpdate::default();
+    assert!(store.update_ramp_order("r2", RampState::SendingSats, RampState::PayingOut, keep, 150).await.unwrap());
+    assert_eq!(store.get_ramp_order("r2").await.unwrap().unwrap().note, None);
+
+    // Once the first has ended, the escrow can have a new one, and that is the one found.
+    store.insert_ramp_order(ramp_order("r3", Some("earned"), 160)).await.unwrap();
+    assert_eq!(store.ramp_order_for_escrow("earned").await.unwrap().unwrap().id, "r3");
+    assert_eq!(store.ramp_order_for_escrow("own-node").await.unwrap(), None);
+    let open: Vec<String> = store.open_ramp_orders().await.unwrap().into_iter().map(|o| o.id).collect();
+    assert_eq!(open.len(), 2);
+    assert!(open.contains(&"r2".to_string()) && open.contains(&"r3".to_string()));
+    let mine: Vec<String> = store.list_ramp_orders("buyer").await.unwrap().into_iter().map(|o| o.id).collect();
+    assert_eq!(mine, ["r3", "r2", "r1"]);
+}
