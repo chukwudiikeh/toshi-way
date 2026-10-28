@@ -649,7 +649,7 @@ test("password vault: lock and unlock, wrong password, new device import, remove
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
 
   // The account page shows the token again only after the password.
-  await page.goto("/account");
+  await page.goto("/account#security");
   await page.getByLabel("Password to show token").fill(PASSWORD);
   await page.getByRole("button", { name: "Show my token" }).click();
   await expect(page.getByText(user.token)).toBeVisible();
@@ -679,7 +679,7 @@ test("backup: a buyer's release secret survives a new device through the backup 
   const secret = await buyer.page.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id);
   expect(secret).toMatch(/^[0-9a-f]{64}$/);
 
-  await buyer.page.goto("/account");
+  await buyer.page.goto("/account#backup");
   await buyer.page.getByLabel("Backup password").fill(PASSWORD);
   const [download] = await Promise.all([
     buyer.page.waitForEvent("download"),
@@ -696,7 +696,7 @@ test("backup: a buyer's release secret survives a new device through the backup 
   await other.goto("/");
   await importToken(other, buyer.token);
   await expect(other.getByRole("heading", { name: "My escrows" })).toBeVisible();
-  await other.goto("/account");
+  await other.goto("/account#backup");
   await other.getByLabel("Backup file", { exact: true }).setInputFiles(path);
   await other.getByLabel("Password of the backup file").fill("not the password at all");
   await other.getByRole("button", { name: "Restore" }).click();
@@ -710,7 +710,7 @@ test("backup: a buyer's release secret survives a new device through the backup 
 test("API keys: a business makes a key, its software uses it, and revoking stops it", async ({ browser }) => {
   const shop = await newParty(browser);
   const { page } = shop;
-  await page.goto("/account");
+  await page.goto("/developers#keys");
 
   await page.getByLabel("Key name").fill("Online shop");
   await page.getByRole("button", { name: "Make key" }).click();
@@ -808,7 +808,7 @@ test("webhooks: a business adds an address, gets a signed test, and is told when
 
   try {
     const { page } = shop;
-    await page.goto("/account");
+    await page.goto("/developers#webhooks");
     await page.getByLabel("Webhook address").fill(`http://127.0.0.1:${port}/toshi`);
     await page.getByRole("button", { name: "Add address" }).click();
     await expect(page.getByText("Copy the signing secret now.")).toBeVisible();
