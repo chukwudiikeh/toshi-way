@@ -65,8 +65,8 @@ export function AccountPage() {
 }
 
 function AddPassword() {
-  const pw = useNewPassword();
   const [error, setError] = useState<string | null>(null);
+  const pw = useNewPassword(() => setError(null));
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -157,8 +157,8 @@ function ShowToken() {
 
 function ChangePassword() {
   const [current, setCurrent] = useState("");
-  const pw = useNewPassword();
   const [error, setError] = useState<string | null>(null);
+  const pw = useNewPassword(() => setError(null));
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
 
