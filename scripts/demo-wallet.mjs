@@ -3,7 +3,8 @@
 //
 // There is no phone wallet on regtest, so this small local server pays invoices from the "buyer"
 // LND node. The web app (started with NEXT_PUBLIC_DEMO_WALLET_URL) shows a "Pay with my wallet"
-// button that posts the invoice here, so nobody has to type `lncli` during a demo.
+// button that posts the invoice here, so nobody has to type `lncli` during a demo. It can also make
+// an invoice (POST /invoice), so a seller has somewhere to withdraw their balance to.
 //
 // It only listens on localhost, only accepts regtest invoices (lnbcrt...), and never builds a shell
 // command from the input. It is a demo tool: never run it against anything but regtest.
@@ -32,7 +33,7 @@ const server = createServer((req, res) => {
   };
   if (req.method === "OPTIONS") return reply(204, {});
   if (req.method === "GET" && req.url === "/health") return reply(200, { ok: true, wallet: "demo (regtest buyer node)" });
-  if (req.method !== "POST" || req.url !== "/pay") return reply(404, { error: "not found" });
+  if (req.method !== "POST" || (req.url !== "/pay" && req.url !== "/invoice")) return reply(404, { error: "not found" });
   // Only the demo web app may ask this wallet to pay.
   if (origin && !origins.includes(origin)) return reply(403, { error: "origin not allowed" });
 
@@ -41,28 +42,58 @@ const server = createServer((req, res) => {
     raw += c;
     if (raw.length > 8192) req.destroy();
   });
-  req.on("end", () => {
-    let invoice;
-    try {
-      invoice = String(JSON.parse(raw).invoice ?? "").trim().toLowerCase();
-    } catch {
-      return reply(400, { error: "send JSON like {\"invoice\": \"lnbcrt...\"}" });
-    }
-    if (!REGTEST_INVOICE.test(invoice)) return reply(400, { error: "that is not a regtest invoice" });
-
-    // Arguments go as an array: the invoice is never interpreted by a shell. lncli blocks while a
-    // hold invoice is held, which is correct, so the request is acknowledged without waiting.
-    const args = [
-      "compose", "-f", resolve(repo, "regtest/docker-compose.yml"),
-      "exec", "-T", "buyer", "lncli", "--network=regtest", "payinvoice", "--force", invoice,
-    ];
-    const child = execFile("docker", args, { timeout: 15 * 60_000 }, (err, _out, stderr) => {
-      if (err) console.error(`payment ${invoice.slice(0, 16)}... ended: ${String(stderr || err.message).split("\n")[0]}`);
-    });
-    child.unref?.();
-    console.log(`paying ${invoice.slice(0, 16)}... from the buyer node`);
-    reply(202, { accepted: true });
-  });
+  req.on("end", () => (req.url === "/invoice" ? makeInvoice(raw, reply) : pay(raw, reply)));
 });
+
+/** An invoice on the buyer node for `amount_sats`: where a demo withdrawal is paid to. */
+function makeInvoice(raw, reply) {
+  let amount;
+  try {
+    amount = Number(JSON.parse(raw).amount_sats);
+  } catch {
+    return reply(400, { error: "send JSON like {\"amount_sats\": 1000}" });
+  }
+  if (!Number.isInteger(amount) || amount < 1 || amount > 10_000_000) {
+    return reply(400, { error: "amount_sats must be a whole number from 1 to 10000000" });
+  }
+  const args = [
+    "compose", "-f", resolve(repo, "regtest/docker-compose.yml"),
+    "exec", "-T", "buyer", "lncli", "--network=regtest", "addinvoice",
+    "--amt", String(amount), "--memo", "toshi-way demo withdrawal", "--expiry", "3600",
+  ];
+  execFile("docker", args, { timeout: 30_000 }, (err, out, stderr) => {
+    if (err) return reply(502, { error: String(stderr || err.message).split("\n")[0] });
+    try {
+      const payment_request = JSON.parse(out).payment_request;
+      console.log(`made an invoice for ${amount} sats on the buyer node`);
+      reply(201, { payment_request });
+    } catch {
+      reply(502, { error: "lncli gave an unexpected answer" });
+    }
+  });
+}
+
+function pay(raw, reply) {
+  let invoice;
+  try {
+    invoice = String(JSON.parse(raw).invoice ?? "").trim().toLowerCase();
+  } catch {
+    return reply(400, { error: "send JSON like {\"invoice\": \"lnbcrt...\"}" });
+  }
+  if (!REGTEST_INVOICE.test(invoice)) return reply(400, { error: "that is not a regtest invoice" });
+
+  // Arguments go as an array: the invoice is never interpreted by a shell. lncli blocks while a
+  // hold invoice is held, which is correct, so the request is acknowledged without waiting.
+  const args = [
+    "compose", "-f", resolve(repo, "regtest/docker-compose.yml"),
+    "exec", "-T", "buyer", "lncli", "--network=regtest", "payinvoice", "--force", invoice,
+  ];
+  const child = execFile("docker", args, { timeout: 15 * 60_000 }, (err, _out, stderr) => {
+    if (err) console.error(`payment ${invoice.slice(0, 16)}... ended: ${String(stderr || err.message).split("\n")[0]}`);
+  });
+  child.unref?.();
+  console.log(`paying ${invoice.slice(0, 16)}... from the buyer node`);
+  reply(202, { accepted: true });
+}
 
 server.listen(port, "127.0.0.1", () => console.log(`demo wallet listening on http://127.0.0.1:${port}`));

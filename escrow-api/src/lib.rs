@@ -7,6 +7,7 @@ pub mod arbiter;
 pub mod auth;
 pub mod checkout;
 pub mod error;
+pub mod money;
 pub mod ratelimit;
 pub mod rates;
 pub mod routes;
@@ -25,8 +26,10 @@ use axum::{
 use escrow_core::{
     adapter::NodeDirectory,
     model::{Role, User},
+    payout::PayoutService,
+    ramp::RampService,
     service::EscrowService,
-    store::{Store, UserStore},
+    store::{PayoutStore, Store, UserStore},
 };
 use tokio::sync::Mutex;
 use tower_http::{
@@ -94,6 +97,10 @@ pub struct AppState<A, S> {
     pub(crate) rates: Arc<dyn rates::RateProvider>,
     /// `None` when there is no credential key, in which case webhooks cannot be set up.
     pub(crate) webhooks: Option<Arc<WebhookSupport>>,
+    /// Sellers' balances on the shared node. `None` when there is no shared node to pay from.
+    pub(crate) payouts: Option<Arc<PayoutService<S>>>,
+    /// Paying and getting paid in naira. Off unless a ramp provider is configured.
+    pub(crate) ramp: Option<Arc<RampService<S>>>,
 }
 
 impl<A, S: Clone> Clone for AppState<A, S> {
@@ -108,6 +115,8 @@ impl<A, S: Clone> Clone for AppState<A, S> {
             node_changes: self.node_changes.clone(),
             rates: self.rates.clone(),
             webhooks: self.webhooks.clone(),
+            payouts: self.payouts.clone(),
+            ramp: self.ramp.clone(),
         }
     }
 }
@@ -124,7 +133,21 @@ impl<A, S: Clone> AppState<A, S> {
             node_changes: Arc::new(tokio::sync::RwLock::new(())),
             rates: Arc::new(rates::Disabled),
             webhooks: None,
+            payouts: None,
+            ramp: None,
         }
+    }
+
+    /// Hold balances for shared-node sellers and let them withdraw.
+    pub fn with_payouts(mut self, payouts: Arc<PayoutService<S>>) -> Self {
+        self.payouts = Some(payouts);
+        self
+    }
+
+    /// Offer paying and getting paid in local currency through `ramp`.
+    pub fn with_ramp(mut self, ramp: Arc<RampService<S>>) -> Self {
+        self.ramp = Some(ramp);
+        self
     }
 
     /// Offer webhooks, sealing signing secrets under `support.key`.
@@ -186,7 +209,7 @@ where
 pub fn router<A, S>(state: AppState<A, S>) -> Router
 where
     A: NodeDirectory + 'static,
-    S: Store + UserStore + Clone + 'static,
+    S: Store + UserStore + PayoutStore + Clone + 'static,
 {
     let request_id = HeaderName::from_static("x-request-id");
     let cors = {
@@ -230,6 +253,18 @@ where
         .route("/api/v1/escrows/{id}/arbitration/confirm", post(routes::arbitration_confirm::<A, S>))
         .route("/api/v1/escrows/{id}/arbitration/decide", post(routes::arbitration_decide::<A, S>))
         .route("/api/v1/operator/escrows", get(routes::operator_list::<A, S>))
+        .route("/api/v1/operator/escrows/{id}/demo-onramp", post(money::operator_demo_onramp::<A, S>))
+        .route("/api/v1/me/balance", get(money::balance::<A, S>))
+        .route("/api/v1/me/withdrawals", get(money::withdrawal_list::<A, S>).post(money::withdrawal_create::<A, S>))
+        .route("/api/v1/me/withdrawals/{id}", get(money::withdrawal_get::<A, S>))
+        .route("/api/v1/ramp", get(money::ramp_info::<A, S>))
+        .route("/api/v1/ramp/resolve", post(money::ramp_resolve::<A, S>))
+        .route("/api/v1/ramp/quote", post(money::ramp_quote::<A, S>))
+        .route("/api/v1/ramp/offramp", post(money::offramp_start::<A, S>))
+        .route("/api/v1/ramp/orders", get(money::ramp_orders::<A, S>))
+        .route("/api/v1/ramp/orders/{id}", get(money::ramp_order_get::<A, S>))
+        .route("/api/v1/ramp/orders/{id}/demo-deposit", post(money::ramp_demo_deposit::<A, S>))
+        .route("/api/v1/escrows/{id}/onramp", get(money::onramp_get::<A, S>).post(money::onramp_start::<A, S>))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::<A, S>))
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30)))

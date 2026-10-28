@@ -5,9 +5,12 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use escrow_core::{
     fiat::FiatQuote,
-    model::{ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Scope, User, Webhook, WebhookProgress},
+    model::{
+        ApiKey, AuditEntry, AuditRow, BankAccount, DepositInstructions, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState,
+        NodeKind, PaymentHash, RampOrder, RampState, Scope, User, Webhook, WebhookProgress, Withdrawal, WithdrawalState,
+    },
     state::EscrowState,
-    store::{EscrowUpdate, Store, StoreError, UserStore, UserTotals},
+    store::{EscrowUpdate, LedgerTotals, PayoutStore, RampUpdate, Store, StoreError, UserStore, UserTotals},
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
@@ -25,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/006_api_keys.sql"),
     include_str!("migrations/007_checkout.sql"),
     include_str!("migrations/008_webhooks.sql"),
+    include_str!("migrations/009_payouts.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
@@ -761,4 +765,274 @@ fn webhook_from_row(row: &SqliteRow) -> Result<Webhook, StoreError> {
         last_attempt_at: row.try_get("last_attempt_at").map_err(backend)?,
         last_status: row.try_get("last_status").map_err(backend)?,
     })
+}
+
+const WITHDRAWAL_COLUMNS: &str = "id, user_id, kind, amount_sats, fee_limit_sats, fee_sats, invoice, payment_hash, state, \
+     failure, created_at, updated_at";
+const RAMP_COLUMNS: &str = "id, user_id, direction, escrow_id, withdrawal_id, amount_sats, currency, fiat_minor, fee_minor, \
+     rate_minor_per_btc, bank_code, bank_name, account_number, account_name, deposit_bank_name, deposit_account_number, \
+     deposit_account_name, deposit_reference, deposit_expires_at, provider, fiat_reference, state, note, created_at, updated_at";
+/// Ramp states after which an order never moves again; kept in step with `RampState::is_terminal`.
+const RAMP_TERMINAL: &str = "('complete', 'refunded', 'expired', 'paid_out', 'failed')";
+
+fn parse<T: FromStr<Err = String>>(row: &SqliteRow, col: &str) -> Result<T, StoreError> {
+    row.try_get::<String, _>(col).map_err(backend)?.parse().map_err(StoreError::Backend)
+}
+
+fn withdrawal_from_row(row: &SqliteRow) -> Result<Withdrawal, StoreError> {
+    Ok(Withdrawal {
+        id: row.try_get("id").map_err(backend)?,
+        user_id: row.try_get("user_id").map_err(backend)?,
+        kind: parse(row, "kind")?,
+        amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
+        fee_limit_sats: row.try_get::<i64, _>("fee_limit_sats").map_err(backend)? as u64,
+        fee_sats: row.try_get::<Option<i64>, _>("fee_sats").map_err(backend)?.map(|f| f as u64),
+        invoice: row.try_get("invoice").map_err(backend)?,
+        payment_hash: hash_from_hex(&row.try_get::<String, _>("payment_hash").map_err(backend)?)?,
+        state: parse(row, "state")?,
+        failure: row.try_get("failure").map_err(backend)?,
+        created_at: row.try_get("created_at").map_err(backend)?,
+        updated_at: row.try_get("updated_at").map_err(backend)?,
+    })
+}
+
+fn ramp_from_row(row: &SqliteRow) -> Result<RampOrder, StoreError> {
+    let deposit_reference: Option<String> = row.try_get("deposit_reference").map_err(backend)?;
+    let deposit = match deposit_reference {
+        Some(reference) => Some(DepositInstructions {
+            bank_name: row.try_get::<Option<String>, _>("deposit_bank_name").map_err(backend)?.unwrap_or_default(),
+            account_number: row.try_get::<Option<String>, _>("deposit_account_number").map_err(backend)?.unwrap_or_default(),
+            account_name: row.try_get::<Option<String>, _>("deposit_account_name").map_err(backend)?.unwrap_or_default(),
+            reference,
+            expires_at: row.try_get::<Option<i64>, _>("deposit_expires_at").map_err(backend)?.unwrap_or_default(),
+        }),
+        None => None,
+    };
+    Ok(RampOrder {
+        id: row.try_get("id").map_err(backend)?,
+        user_id: row.try_get("user_id").map_err(backend)?,
+        direction: parse(row, "direction")?,
+        escrow_id: row.try_get("escrow_id").map_err(backend)?,
+        withdrawal_id: row.try_get("withdrawal_id").map_err(backend)?,
+        amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
+        currency: row.try_get("currency").map_err(backend)?,
+        fiat_minor: row.try_get("fiat_minor").map_err(backend)?,
+        fee_minor: row.try_get("fee_minor").map_err(backend)?,
+        rate_minor_per_btc: row.try_get("rate_minor_per_btc").map_err(backend)?,
+        bank: BankAccount {
+            bank_code: row.try_get("bank_code").map_err(backend)?,
+            bank_name: row.try_get("bank_name").map_err(backend)?,
+            account_number: row.try_get("account_number").map_err(backend)?,
+            account_name: row.try_get("account_name").map_err(backend)?,
+        },
+        deposit,
+        provider: row.try_get("provider").map_err(backend)?,
+        fiat_reference: row.try_get("fiat_reference").map_err(backend)?,
+        state: parse(row, "state")?,
+        note: row.try_get("note").map_err(backend)?,
+        created_at: row.try_get("created_at").map_err(backend)?,
+        updated_at: row.try_get("updated_at").map_err(backend)?,
+    })
+}
+
+/// The balance arithmetic in SQL, for one user bound twice as `?`: earned from settled shared-node
+/// escrows as seller, held by pending withdrawals, and spent by those that went through.
+const LEDGER_SQL: &str = "SELECT \
+     (SELECT COALESCE(SUM(amount_sats), 0) FROM escrows WHERE seller_id = ?1 AND node = 'shared' AND state = 'SETTLED') AS earned, \
+     (SELECT COALESCE(SUM(amount_sats + fee_limit_sats), 0) FROM withdrawals WHERE user_id = ?1 AND state = 'pending') AS held, \
+     (SELECT COALESCE(SUM(amount_sats + COALESCE(fee_sats, 0)), 0) FROM withdrawals WHERE user_id = ?1 AND state = 'succeeded') AS spent";
+
+#[async_trait]
+impl PayoutStore for SqliteStore {
+    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
+        let row = sqlx::query(LEDGER_SQL).bind(user_id).fetch_one(&self.pool).await.map_err(backend)?;
+        Ok(LedgerTotals {
+            earned_sats: row.try_get::<i64, _>("earned").map_err(backend)? as u64,
+            held_sats: row.try_get::<i64, _>("held").map_err(backend)? as u64,
+            withdrawn_sats: row.try_get::<i64, _>("spent").map_err(backend)? as u64,
+        })
+    }
+
+    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
+        // One statement checks the balance and inserts, so SQLite's write lock makes it atomic.
+        let res = sqlx::query(&format!(
+            "INSERT INTO withdrawals ({WITHDRAWAL_COLUMNS}) \
+             SELECT ?2, ?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 \
+             FROM ({LEDGER_SQL}) AS t WHERE t.earned - t.held - t.spent >= ?13"
+        ))
+        .bind(&w.user_id)
+        .bind(&w.id)
+        .bind(w.kind.as_str())
+        .bind(w.amount_sats as i64)
+        .bind(w.fee_limit_sats as i64)
+        .bind(w.fee_sats.map(|f| f as i64))
+        .bind(&w.invoice)
+        .bind(hex::encode(w.payment_hash))
+        .bind(w.state.as_str())
+        .bind(&w.failure)
+        .bind(w.created_at)
+        .bind(w.updated_at)
+        .bind(w.debit() as i64)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(r) => Ok(r.rows_affected() == 1),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(StoreError::Conflict),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError> {
+        let row = sqlx::query(&format!("SELECT {WITHDRAWAL_COLUMNS} FROM withdrawals WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(withdrawal_from_row).transpose()
+    }
+
+    async fn list_withdrawals(&self, user_id: &str) -> Result<Vec<Withdrawal>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {WITHDRAWAL_COLUMNS} FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC, id LIMIT 100"
+        ))
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(withdrawal_from_row).collect()
+    }
+
+    async fn pending_withdrawals(&self) -> Result<Vec<Withdrawal>, StoreError> {
+        let rows = sqlx::query(&format!("SELECT {WITHDRAWAL_COLUMNS} FROM withdrawals WHERE state = 'pending' ORDER BY created_at, id"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
+        rows.iter().map(withdrawal_from_row).collect()
+    }
+
+    async fn finish_withdrawal(
+        &self,
+        id: &str,
+        state: WithdrawalState,
+        fee_sats: Option<u64>,
+        failure: Option<String>,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        let res = sqlx::query(
+            "UPDATE withdrawals SET state = ?, fee_sats = ?, failure = ?, updated_at = ? WHERE id = ? AND state = 'pending'",
+        )
+        .bind(state.as_str())
+        .bind(fee_sats.map(|f| f as i64))
+        .bind(&failure)
+        .bind(at)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    async fn insert_ramp_order(&self, o: RampOrder) -> Result<(), StoreError> {
+        let d = o.deposit.as_ref();
+        let res = sqlx::query(&format!(
+            "INSERT INTO ramp_orders ({RAMP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
+        .bind(&o.id)
+        .bind(&o.user_id)
+        .bind(o.direction.as_str())
+        .bind(&o.escrow_id)
+        .bind(&o.withdrawal_id)
+        .bind(o.amount_sats as i64)
+        .bind(&o.currency)
+        .bind(o.fiat_minor)
+        .bind(o.fee_minor)
+        .bind(o.rate_minor_per_btc)
+        .bind(&o.bank.bank_code)
+        .bind(&o.bank.bank_name)
+        .bind(&o.bank.account_number)
+        .bind(&o.bank.account_name)
+        .bind(d.map(|d| d.bank_name.clone()))
+        .bind(d.map(|d| d.account_number.clone()))
+        .bind(d.map(|d| d.account_name.clone()))
+        .bind(d.map(|d| d.reference.clone()))
+        .bind(d.map(|d| d.expires_at))
+        .bind(&o.provider)
+        .bind(&o.fiat_reference)
+        .bind(o.state.as_str())
+        .bind(&o.note)
+        .bind(o.created_at)
+        .bind(o.updated_at)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(StoreError::Conflict),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    async fn get_ramp_order(&self, id: &str) -> Result<Option<RampOrder>, StoreError> {
+        let row = sqlx::query(&format!("SELECT {RAMP_COLUMNS} FROM ramp_orders WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(ramp_from_row).transpose()
+    }
+
+    async fn list_ramp_orders(&self, user_id: &str) -> Result<Vec<RampOrder>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RAMP_COLUMNS} FROM ramp_orders WHERE user_id = ? ORDER BY created_at DESC, id LIMIT 100"
+        ))
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(ramp_from_row).collect()
+    }
+
+    async fn open_ramp_orders(&self) -> Result<Vec<RampOrder>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RAMP_COLUMNS} FROM ramp_orders WHERE state NOT IN {RAMP_TERMINAL} ORDER BY created_at, id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(ramp_from_row).collect()
+    }
+
+    async fn ramp_order_for_escrow(&self, escrow_id: &str) -> Result<Option<RampOrder>, StoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT {RAMP_COLUMNS} FROM ramp_orders WHERE escrow_id = ? ORDER BY created_at DESC, id LIMIT 1"
+        ))
+        .bind(escrow_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        row.as_ref().map(ramp_from_row).transpose()
+    }
+
+    async fn update_ramp_order(
+        &self,
+        id: &str,
+        expected: RampState,
+        to: RampState,
+        update: RampUpdate,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        let res = sqlx::query(
+            "UPDATE ramp_orders SET state = ?, updated_at = ?, note = COALESCE(?, note), \
+                 fiat_reference = COALESCE(?, fiat_reference) WHERE id = ? AND state = ?",
+        )
+        .bind(to.as_str())
+        .bind(at)
+        .bind(&update.note)
+        .bind(&update.fiat_reference)
+        .bind(id)
+        .bind(expected.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(res.rows_affected() == 1)
+    }
 }

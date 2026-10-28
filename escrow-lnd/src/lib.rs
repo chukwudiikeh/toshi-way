@@ -7,6 +7,7 @@ pub mod address;
 pub mod creds;
 pub mod directory;
 pub mod runner;
+pub mod wallet;
 
 use std::{path::Path, time::Duration};
 

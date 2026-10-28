@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use crate::{
     model::{
-        ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User, Webhook, WebhookProgress,
+        ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, NodeKind, PaymentHash, RampOrder, RampState,
+        User, Webhook, WebhookProgress, Withdrawal, WithdrawalState,
     },
     state::EscrowState,
 };
@@ -119,6 +120,74 @@ pub trait UserStore: Send + Sync {
     async fn record_webhook_progress(&self, id: &str, progress: WebhookProgress) -> Result<(), StoreError>;
 }
 
+/// The sums behind a seller's balance. Only escrows on the shared node count: with their own node
+/// the sats were never the operator's to hold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LedgerTotals {
+    /// Sats of settled shared-node escrows where they are the seller.
+    pub earned_sats: u64,
+    /// Held back for withdrawals still being paid: the amount plus the most the fee can be.
+    pub held_sats: u64,
+    /// Paid out by withdrawals that went through, fees included.
+    pub withdrawn_sats: u64,
+}
+
+impl LedgerTotals {
+    pub fn available(&self) -> u64 {
+        self.earned_sats.saturating_sub(self.held_sats + self.withdrawn_sats)
+    }
+}
+
+/// What a ramp order's step changes besides its state.
+#[derive(Debug, Clone, Default)]
+pub struct RampUpdate {
+    pub note: Option<String>,
+    pub fiat_reference: Option<String>,
+}
+
+/// Payouts of the sats the operator owes sellers, and conversions to and from local currency.
+#[async_trait]
+pub trait PayoutStore: Send + Sync {
+    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError>;
+    /// Record a new pending withdrawal, but only if the user's available balance covers its
+    /// [`Withdrawal::debit`]. The check and the insert are one atomic step, so two withdrawals at
+    /// once cannot both spend the same sats. `Ok(false)` if the balance is too low; `Conflict` if
+    /// the id is taken or the same invoice is already being paid or was paid.
+    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError>;
+    async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError>;
+    /// A user's newest 100 withdrawals, newest first.
+    async fn list_withdrawals(&self, user_id: &str) -> Result<Vec<Withdrawal>, StoreError>;
+    async fn pending_withdrawals(&self) -> Result<Vec<Withdrawal>, StoreError>;
+    /// Move a pending withdrawal to `state`. `false` if it was no longer pending.
+    async fn finish_withdrawal(
+        &self,
+        id: &str,
+        state: WithdrawalState,
+        fee_sats: Option<u64>,
+        failure: Option<String>,
+        at: i64,
+    ) -> Result<bool, StoreError>;
+
+    /// `Conflict` if the id is taken, or (for an on-ramp) the escrow already has an order in progress.
+    async fn insert_ramp_order(&self, order: RampOrder) -> Result<(), StoreError>;
+    async fn get_ramp_order(&self, id: &str) -> Result<Option<RampOrder>, StoreError>;
+    /// A user's newest 100 orders, newest first.
+    async fn list_ramp_orders(&self, user_id: &str) -> Result<Vec<RampOrder>, StoreError>;
+    /// Orders that have not reached a terminal state.
+    async fn open_ramp_orders(&self) -> Result<Vec<RampOrder>, StoreError>;
+    /// The newest on-ramp order for an escrow, in any state.
+    async fn ramp_order_for_escrow(&self, escrow_id: &str) -> Result<Option<RampOrder>, StoreError>;
+    /// Compare-and-set: move `id` from `expected` to `to`. `false` if it was no longer in `expected`.
+    async fn update_ramp_order(
+        &self,
+        id: &str,
+        expected: RampState,
+        to: RampState,
+        update: RampUpdate,
+        at: i64,
+    ) -> Result<bool, StoreError>;
+}
+
 #[derive(Default)]
 pub struct MemoryStore {
     inner: Mutex<MemoryInner>,
@@ -134,6 +203,27 @@ struct MemoryInner {
     arbiter_keys: Vec<(String, String)>,
     api_keys: Vec<(ApiKey, String)>,
     webhooks: Vec<Webhook>,
+    withdrawals: Vec<Withdrawal>,
+    ramp_orders: Vec<RampOrder>,
+}
+
+impl MemoryInner {
+    fn ledger_totals(&self, user_id: &str) -> LedgerTotals {
+        let mut t = LedgerTotals::default();
+        for e in &self.escrows {
+            if e.seller_id == user_id && e.node == NodeKind::Shared && e.state == EscrowState::Settled {
+                t.earned_sats += e.amount_sats;
+            }
+        }
+        for w in self.withdrawals.iter().filter(|w| w.user_id == user_id) {
+            match w.state {
+                WithdrawalState::Pending => t.held_sats += w.debit(),
+                WithdrawalState::Succeeded => t.withdrawn_sats += w.debit(),
+                WithdrawalState::Failed => {}
+            }
+        }
+        t
+    }
 }
 
 impl MemoryStore {
@@ -569,5 +659,200 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
     }
     async fn record_webhook_progress(&self, id: &str, progress: WebhookProgress) -> Result<(), StoreError> {
         (**self).record_webhook_progress(id, progress).await
+    }
+}
+
+#[async_trait]
+impl PayoutStore for MemoryStore {
+    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
+        Ok(self.inner.lock().unwrap().ledger_totals(user_id))
+    }
+
+    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        let taken = g.withdrawals.iter().any(|x| {
+            x.id == w.id || (x.payment_hash == w.payment_hash && x.state != WithdrawalState::Failed)
+        });
+        if taken {
+            return Err(StoreError::Conflict);
+        }
+        if g.ledger_totals(&w.user_id).available() < w.debit() {
+            return Ok(false);
+        }
+        g.withdrawals.push(w);
+        Ok(true)
+    }
+
+    async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError> {
+        Ok(self.inner.lock().unwrap().withdrawals.iter().find(|w| w.id == id).cloned())
+    }
+
+    async fn list_withdrawals(&self, user_id: &str) -> Result<Vec<Withdrawal>, StoreError> {
+        let mut list: Vec<Withdrawal> =
+            self.inner.lock().unwrap().withdrawals.iter().filter(|w| w.user_id == user_id).cloned().collect();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        list.truncate(100);
+        Ok(list)
+    }
+
+    async fn pending_withdrawals(&self) -> Result<Vec<Withdrawal>, StoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .withdrawals
+            .iter()
+            .filter(|w| w.state == WithdrawalState::Pending)
+            .cloned()
+            .collect())
+    }
+
+    async fn finish_withdrawal(
+        &self,
+        id: &str,
+        state: WithdrawalState,
+        fee_sats: Option<u64>,
+        failure: Option<String>,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        match g.withdrawals.iter_mut().find(|w| w.id == id && w.state == WithdrawalState::Pending) {
+            Some(w) => {
+                w.state = state;
+                w.fee_sats = fee_sats;
+                w.failure = failure;
+                w.updated_at = at;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn insert_ramp_order(&self, order: RampOrder) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        let taken = g.ramp_orders.iter().any(|o| {
+            o.id == order.id
+                || (order.escrow_id.is_some() && o.escrow_id == order.escrow_id && !o.state.is_terminal())
+        });
+        if taken {
+            return Err(StoreError::Conflict);
+        }
+        g.ramp_orders.push(order);
+        Ok(())
+    }
+
+    async fn get_ramp_order(&self, id: &str) -> Result<Option<RampOrder>, StoreError> {
+        Ok(self.inner.lock().unwrap().ramp_orders.iter().find(|o| o.id == id).cloned())
+    }
+
+    async fn list_ramp_orders(&self, user_id: &str) -> Result<Vec<RampOrder>, StoreError> {
+        let mut list: Vec<RampOrder> =
+            self.inner.lock().unwrap().ramp_orders.iter().filter(|o| o.user_id == user_id).cloned().collect();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        list.truncate(100);
+        Ok(list)
+    }
+
+    async fn open_ramp_orders(&self) -> Result<Vec<RampOrder>, StoreError> {
+        Ok(self.inner.lock().unwrap().ramp_orders.iter().filter(|o| !o.state.is_terminal()).cloned().collect())
+    }
+
+    async fn ramp_order_for_escrow(&self, escrow_id: &str) -> Result<Option<RampOrder>, StoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .ramp_orders
+            .iter()
+            .filter(|o| o.escrow_id.as_deref() == Some(escrow_id))
+            .max_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| b.id.cmp(&a.id)))
+            .cloned())
+    }
+
+    async fn update_ramp_order(
+        &self,
+        id: &str,
+        expected: RampState,
+        to: RampState,
+        update: RampUpdate,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        match g.ramp_orders.iter_mut().find(|o| o.id == id && o.state == expected) {
+            Some(o) => {
+                o.state = to;
+                o.updated_at = at;
+                if update.note.is_some() {
+                    o.note = update.note;
+                }
+                if update.fiat_reference.is_some() {
+                    o.fiat_reference = update.fiat_reference;
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+}
+
+#[async_trait]
+impl<S: PayoutStore + ?Sized> PayoutStore for std::sync::Arc<S> {
+    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
+        (**self).ledger_totals(user_id).await
+    }
+    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
+        (**self).insert_withdrawal(w).await
+    }
+    async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError> {
+        (**self).get_withdrawal(id).await
+    }
+    async fn list_withdrawals(&self, user_id: &str) -> Result<Vec<Withdrawal>, StoreError> {
+        (**self).list_withdrawals(user_id).await
+    }
+    async fn pending_withdrawals(&self) -> Result<Vec<Withdrawal>, StoreError> {
+        (**self).pending_withdrawals().await
+    }
+    async fn finish_withdrawal(
+        &self,
+        id: &str,
+        state: WithdrawalState,
+        fee_sats: Option<u64>,
+        failure: Option<String>,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        (**self).finish_withdrawal(id, state, fee_sats, failure, at).await
+    }
+    async fn insert_ramp_order(&self, order: RampOrder) -> Result<(), StoreError> {
+        (**self).insert_ramp_order(order).await
+    }
+    async fn get_ramp_order(&self, id: &str) -> Result<Option<RampOrder>, StoreError> {
+        (**self).get_ramp_order(id).await
+    }
+    async fn list_ramp_orders(&self, user_id: &str) -> Result<Vec<RampOrder>, StoreError> {
+        (**self).list_ramp_orders(user_id).await
+    }
+    async fn open_ramp_orders(&self) -> Result<Vec<RampOrder>, StoreError> {
+        (**self).open_ramp_orders().await
+    }
+    async fn ramp_order_for_escrow(&self, escrow_id: &str) -> Result<Option<RampOrder>, StoreError> {
+        (**self).ramp_order_for_escrow(escrow_id).await
+    }
+    async fn update_ramp_order(
+        &self,
+        id: &str,
+        expected: RampState,
+        to: RampState,
+        update: RampUpdate,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        (**self).update_ramp_order(id, expected, to, update, at).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn memory_store_meets_the_payout_store_contract() {
+        crate::testing::payout_store_contract(&super::MemoryStore::new()).await;
     }
 }

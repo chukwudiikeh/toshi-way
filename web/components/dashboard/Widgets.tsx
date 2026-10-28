@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { formatSats } from "@/lib/clock";
 import { recentActivity, shortDuration, shortId, timeAgo, type Summary, type Todo } from "@/lib/dashboard";
-import type { ArbiterKey, Escrow, NodeInfo } from "@/lib/schemas";
+import type { ArbiterKey, Balance, Escrow, NodeInfo } from "@/lib/schemas";
 import { CopyField, StateBadge } from "../ui";
 import { ArrowIcon, BoltIcon, CheckIcon, ClockIcon, KeyIcon, LockIcon, QrIcon, ScaleIcon, ShieldIcon } from "../landing/icons";
 
@@ -302,6 +302,30 @@ export function Activity({ escrows, now }: { escrows: Escrow[]; now: number }) {
           </li>
         ))}
       </ul>
+    </SideCard>
+  );
+}
+
+/** What the service holds for a seller paid on its shared node, with a way to take it out. */
+export function BalanceCard({ balance }: { balance: Balance | null }) {
+  if (!balance?.payouts || balance.earned_sats === 0) return null;
+  return (
+    <SideCard
+      title="Balance"
+      action={
+        <Link href="/balance" className={linkClass}>
+          Withdraw
+        </Link>
+      }
+    >
+      <div className="text-2xl font-bold tabular-nums">{formatSats(balance.available_sats)}</div>
+      <div className="mt-1 text-xs text-neutral-500">
+        {balance.held_sats > 0
+          ? `${formatSats(balance.held_sats)} on the way to you.`
+          : balance.offramp
+            ? "Withdraw to a Lightning wallet or your Nigerian bank."
+            : "Withdraw to any Lightning wallet."}
+      </div>
     </SideCard>
   );
 }

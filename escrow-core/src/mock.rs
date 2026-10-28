@@ -276,3 +276,125 @@ impl NodeDirectory for MockDirectory {
         }
     }
 }
+
+#[derive(Default)]
+struct WalletInner {
+    payments: HashMap<PaymentHash, crate::payout::PaymentStatus>,
+    /// What the next `pay` reports, instead of `InFlight`.
+    next: Option<crate::payout::PaymentStatus>,
+    /// The next `pay` gets no answer, as if the connection dropped mid-call.
+    lose_next: bool,
+    offline: bool,
+    counter: u64,
+}
+
+/// In-memory stand-in for a node that pays and receives ordinary payments. Payments start in flight;
+/// a test decides how they end with [`MockWallet::set_payment`].
+#[derive(Clone, Default)]
+pub struct MockWallet(Arc<Mutex<WalletInner>>);
+
+impl MockWallet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// An invoice for `amount_sats`, payable until `expires_at`. Like a real one, any wallet can read it.
+    pub fn invoice(&self, amount_sats: u64, expires_at: i64) -> String {
+        let mut g = self.0.lock().unwrap();
+        g.counter += 1;
+        // Distinct per wallet and per call, so two wallets never make the same hash.
+        let mut hash = [0u8; 32];
+        hash[..8].copy_from_slice(&g.counter.to_be_bytes());
+        hash[8..16].copy_from_slice(&(Arc::as_ptr(&self.0) as usize as u64).to_be_bytes());
+        format!("lnbcrt{amount_sats}mock{}x{expires_at}", hex::encode(hash))
+    }
+
+    pub fn hash_of(&self, invoice: &str) -> Option<PaymentHash> {
+        parse_mock_invoice(invoice).map(|d| d.payment_hash)
+    }
+
+    pub fn set_payment(&self, hash: &PaymentHash, status: crate::payout::PaymentStatus) {
+        self.0.lock().unwrap().payments.insert(*hash, status);
+    }
+
+    /// Make the next `pay` report `status` straight away.
+    pub fn next_payment(&self, status: crate::payout::PaymentStatus) {
+        self.0.lock().unwrap().next = Some(status);
+    }
+
+    pub fn set_offline(&self, offline: bool) {
+        self.0.lock().unwrap().offline = offline;
+    }
+
+    /// Make the next `pay` fail as unreachable without the payment being recorded, so the caller
+    /// cannot know whether it started.
+    pub fn lose_next_payment(&self) {
+        self.0.lock().unwrap().lose_next = true;
+    }
+
+    /// Hashes of every payment started, in no particular order.
+    pub fn paid(&self) -> Vec<PaymentHash> {
+        self.0.lock().unwrap().payments.keys().copied().collect()
+    }
+}
+
+/// Read an invoice made by [`MockWallet::invoice`].
+fn parse_mock_invoice(invoice: &str) -> Option<crate::payout::DecodedInvoice> {
+    let rest = invoice.strip_prefix("lnbcrt")?;
+    let (amount, rest) = rest.split_once("mock")?;
+    let (hash, expires) = rest.split_once('x')?;
+    Some(crate::payout::DecodedInvoice {
+        payment_hash: hex::decode(hash).ok()?.try_into().ok()?,
+        amount_sats: Some(amount.parse().ok()?),
+        expires_at: expires.parse().ok()?,
+    })
+}
+
+/// The hash of an invoice from [`MockLightning`] or [`MockWallet`].
+fn mock_invoice_hash(invoice: &str) -> Option<PaymentHash> {
+    if let Some(d) = parse_mock_invoice(invoice) {
+        return Some(d.payment_hash);
+    }
+    hex::decode(invoice.strip_prefix("lnbcrt-mock-")?).ok()?.try_into().ok()
+}
+
+#[async_trait]
+impl crate::payout::Wallet for MockWallet {
+    async fn decode(&self, invoice: &str) -> Result<crate::payout::DecodedInvoice, AdapterError> {
+        let g = self.0.lock().unwrap();
+        if g.offline {
+            return Err(AdapterError::Unavailable("mock wallet offline".into()));
+        }
+        parse_mock_invoice(invoice).ok_or_else(|| AdapterError::Rejected("invalid invoice".into()))
+    }
+
+    async fn pay(&self, invoice: &str, _max_fee_sats: u64) -> Result<crate::payout::PaymentStatus, AdapterError> {
+        let mut g = self.0.lock().unwrap();
+        if g.offline {
+            return Err(AdapterError::Unavailable("mock wallet offline".into()));
+        }
+        let hash = mock_invoice_hash(invoice).ok_or_else(|| AdapterError::Rejected("invalid invoice".into()))?;
+        if std::mem::take(&mut g.lose_next) {
+            return Err(AdapterError::Unavailable("connection lost".into()));
+        }
+        let status = g.next.take().unwrap_or(crate::payout::PaymentStatus::InFlight);
+        g.payments.insert(hash, status.clone());
+        Ok(status)
+    }
+
+    async fn payment_status(&self, hash: &PaymentHash) -> Result<crate::payout::PaymentStatus, AdapterError> {
+        let g = self.0.lock().unwrap();
+        if g.offline {
+            return Err(AdapterError::Unavailable("mock wallet offline".into()));
+        }
+        Ok(g.payments.get(hash).cloned().unwrap_or(crate::payout::PaymentStatus::Unknown))
+    }
+
+    async fn create_invoice(&self, amount_sats: u64, _memo: &str, expiry_secs: i64) -> Result<String, AdapterError> {
+        if self.0.lock().unwrap().offline {
+            return Err(AdapterError::Unavailable("mock wallet offline".into()));
+        }
+        // Far enough ahead for any test clock.
+        Ok(self.invoice(amount_sats, 1 << 40 | expiry_secs))
+    }
+}

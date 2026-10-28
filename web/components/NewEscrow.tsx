@@ -4,8 +4,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
-import { formatFiat, formatRate, valueOfSats } from "@/lib/fiat";
+import { formatFiat, formatRate, satsForValue, valueOfSats } from "@/lib/fiat";
 import {
+  MAX_AMOUNT_SATS,
   MAX_DESCRIPTION,
   NewEscrowForm,
   type NodeInfo,
@@ -30,6 +31,8 @@ type Values = {
   arbiter_id: string;
   fiat_currency: string;
   amount_sats: string;
+  /** The price in naira, when the seller prices the deal in naira. */
+  amount_naira: string;
   description: string;
   hold_amount: string;
   hold_unit: "minutes" | "hours";
@@ -41,6 +44,7 @@ const initial: Values = {
   arbiter_id: "",
   fiat_currency: "",
   amount_sats: "",
+  amount_naira: "",
   description: escrowTypes[0].template,
   hold_amount: "1",
   hold_unit: "hours",
@@ -124,6 +128,7 @@ export function NewEscrow() {
   const [rates, setRates] = useState<RatesInfo | null>(null);
   const [quote, setQuote] = useState<RateQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [priceIn, setPriceIn] = useState<"sats" | "naira">("sats");
 
   useEffect(() => {
     if (!session || session.kind !== "user") return;
@@ -165,6 +170,22 @@ export function NewEscrow() {
       clearInterval(t);
     };
   }, [currency, session]);
+
+  // Priced in naira: the escrow is still in sats, worked out from the naira at today's rate and
+  // fixed when it is created. The naira value is recorded with it (as its fiat value).
+  const nairaOffered =
+    !!rates?.enabled && rates.currencies.some((c) => c.code === "NGN");
+  const naira = Number(values.amount_naira.replace(/,/g, ""));
+  const nairaSats =
+    priceIn === "naira" &&
+    quote?.currency === "NGN" &&
+    Number.isFinite(naira) &&
+    naira > 0
+      ? satsForValue(
+          Math.round(naira * 10 ** quote.exponent),
+          quote.rate_minor_per_btc,
+        )
+      : null;
 
   if (session === undefined) return <Spinner />;
   if (!session)
@@ -216,11 +237,41 @@ export function NewEscrow() {
     if (Object.keys(found).length === 0) setStep(2);
   }
 
+  function pickPrice(next: "sats" | "naira") {
+    setPriceIn(next);
+    setQuote(null);
+    setQuoteError(null);
+    set("fiat_currency", next === "naira" ? "NGN" : "");
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
+    if (priceIn === "naira") {
+      const max = quote
+        ? formatFiat(
+            valueOfSats(MAX_AMOUNT_SATS, quote.rate_minor_per_btc),
+            "NGN",
+            quote.exponent,
+          )
+        : null;
+      const problem = !(naira > 0)
+        ? "Enter the price in naira"
+        : !quote
+          ? (quoteError ??
+            "Still fetching the naira rate; try again in a moment")
+          : nairaSats === null || nairaSats < 1
+            ? "That is less than 1 sat"
+            : nairaSats > MAX_AMOUNT_SATS
+              ? `At most ${max} (${MAX_AMOUNT_SATS.toLocaleString("en-US")} sats)`
+              : null;
+      if (problem) return setErrors({ amount_naira: problem });
+    }
     const parsed = NewEscrowForm.safeParse({
       ...values,
+      ...(priceIn === "naira"
+        ? { amount_sats: String(nairaSats), fiat_currency: "NGN" }
+        : {}),
       description: composeDescription(values),
     });
     if (!parsed.success) {
@@ -382,20 +433,107 @@ export function NewEscrow() {
                 </button>
               </p>
               <form onSubmit={submit} className="space-y-4" noValidate>
-                <Field
-                  label="Amount (sats)"
-                  hint="Between 1 and 1,000,000 sats."
-                  error={errors.amount_sats}
-                >
-                  <input
-                    value={values.amount_sats}
-                    onChange={(e) => set("amount_sats", e.target.value)}
-                    className={inputClass}
-                    inputMode="numeric"
-                    placeholder="1000"
-                  />
-                </Field>
-                {rates?.enabled && (
+                {nairaOffered && (
+                  <div>
+                    <div className="mb-1 text-sm font-medium">Price in</div>
+                    <div
+                      role="radiogroup"
+                      aria-label="Price in"
+                      className="grid grid-cols-2 gap-2"
+                    >
+                      {(
+                        [
+                          ["sats", "Sats", "Bitcoin over Lightning"],
+                          [
+                            "naira",
+                            "Naira (₦)",
+                            "Converted to sats at today's rate",
+                          ],
+                        ] as const
+                      ).map(([key, title, sub]) => (
+                        <button
+                          key={key}
+                          type="button"
+                          role="radio"
+                          aria-checked={priceIn === key}
+                          onClick={() => pickPrice(key)}
+                          className={`rounded-xl border-2 px-4 py-2.5 text-left transition-colors ${
+                            priceIn === key
+                              ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30"
+                              : "border-neutral-200 hover:border-neutral-300 dark:border-neutral-800 dark:hover:border-neutral-700"
+                          }`}
+                        >
+                          <div className="text-sm font-semibold">{title}</div>
+                          <div className="text-xs text-neutral-500">{sub}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {priceIn === "naira" ? (
+                  <Field
+                    label="Amount (₦)"
+                    hint="The buyer can pay in naira by bank transfer or in sats; either way the escrow holds sats."
+                    error={errors.amount_naira ?? errors.amount_sats}
+                  >
+                    <input
+                      value={values.amount_naira}
+                      onChange={(e) =>
+                        set(
+                          "amount_naira",
+                          e.target.value.replace(/[^\d.,]/g, ""),
+                        )
+                      }
+                      className={inputClass}
+                      inputMode="decimal"
+                      placeholder="50,000"
+                    />
+                    {quoteError ? (
+                      <p className="mt-2 text-xs text-red-700 dark:text-red-400">
+                        {quoteError}
+                      </p>
+                    ) : !quote ? (
+                      <p className="mt-2 text-xs text-neutral-500">
+                        Fetching the naira rate…
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm">
+                        {nairaSats !== null && (
+                          <>
+                            <strong>
+                              = {nairaSats.toLocaleString("en-US")} sats
+                            </strong>{" "}
+                            <span className="text-neutral-500">at</span>{" "}
+                          </>
+                        )}
+                        <span className="text-neutral-500">
+                          {formatRate(
+                            quote.rate_minor_per_btc,
+                            quote.currency,
+                            quote.exponent,
+                          )}{" "}
+                          per bitcoin ({quote.source}). Fixed when you create
+                          the escrow.
+                        </span>
+                      </p>
+                    )}
+                  </Field>
+                ) : (
+                  <Field
+                    label="Amount (sats)"
+                    hint="Between 1 and 1,000,000 sats."
+                    error={errors.amount_sats}
+                  >
+                    <input
+                      value={values.amount_sats}
+                      onChange={(e) => set("amount_sats", e.target.value)}
+                      className={inputClass}
+                      inputMode="numeric"
+                      placeholder="1000"
+                    />
+                  </Field>
+                )}
+                {rates?.enabled && priceIn === "sats" && (
                   <Field
                     label="Also show the value in (optional)"
                     hint="Display only: the escrow is in sats. The value is worked out once, now, and never changes."
