@@ -121,9 +121,39 @@ services:
     volumes:
       - seller:/root/.lnd
 
+  # A second seller with their own node, to show escrows pay each seller on that seller's node.
+  seller2:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      - bitcoind
+    restart: unless-stopped
+    command:
+      - --noseedbackup
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=toshi
+      - --bitcoind.rpcpass=toshi
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --listen=0.0.0.0:9735
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --tlsextradomain=localhost
+      - --debuglevel=info
+      - --alias=seller2
+      - --tlsextradomain=seller2
+    ports:
+      - "10004:10009"
+      - "8084:8080"
+    volumes:
+      - seller2:/root/.lnd
+
 volumes:
   bitcoind:
   buyer:
   router:
   seller:
+  seller2:
   postgres:

@@ -19,7 +19,7 @@ use axum::{
     Router,
 };
 use escrow_core::{
-    adapter::LightningAdapter,
+    adapter::NodeDirectory,
     model::{Role, User},
     service::EscrowService,
     store::{Store, UserStore},
@@ -73,6 +73,9 @@ pub struct AppState<A, S> {
     pub now: Clock,
     pub(crate) limiter: Arc<RateLimiter>,
     pub(crate) idempotency: Arc<IdempotencyCache>,
+    /// Changing a seller's node must not interleave with creating an invoice on it: invoice
+    /// creation holds this for reading, a node change for writing.
+    pub(crate) node_changes: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl<A, S: Clone> Clone for AppState<A, S> {
@@ -84,6 +87,7 @@ impl<A, S: Clone> Clone for AppState<A, S> {
             now: self.now.clone(),
             limiter: self.limiter.clone(),
             idempotency: self.idempotency.clone(),
+            node_changes: self.node_changes.clone(),
         }
     }
 }
@@ -97,6 +101,7 @@ impl<A, S: Clone> AppState<A, S> {
             now,
             limiter: Arc::new(RateLimiter::default()),
             idempotency: Arc::new(IdempotencyCache::default()),
+            node_changes: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 }
@@ -114,7 +119,7 @@ pub async fn ensure_operator<U: UserStore>(users: &U, token: &str, now: i64) -> 
 
 async fn rate_limit<A, S>(State(st): State<AppState<A, S>>, req: Request, next: Next) -> Response
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let ip = req
@@ -146,7 +151,7 @@ where
 
 pub fn router<A, S>(state: AppState<A, S>) -> Router
 where
-    A: LightningAdapter + 'static,
+    A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
     let request_id = HeaderName::from_static("x-request-id");
@@ -155,7 +160,7 @@ where
             state.config.cors_origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST])
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, HeaderName::from_static("idempotency-key")])
             .expose_headers([request_id.clone(), header::RETRY_AFTER])
             .max_age(Duration::from_secs(600))
@@ -164,6 +169,10 @@ where
         .route("/health", get(routes::health::<A, S>))
         .route("/api/v1/users", post(routes::register::<A, S>))
         .route("/api/v1/me", get(routes::me))
+        .route(
+            "/api/v1/me/node",
+            get(routes::node_get::<A, S>).put(routes::node_put::<A, S>).delete(routes::node_delete::<A, S>),
+        )
         .route("/api/v1/escrows", post(routes::create_escrow::<A, S>).get(routes::list_mine::<A, S>))
         .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
         .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))

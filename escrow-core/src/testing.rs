@@ -2,7 +2,7 @@
 //! [`store_contract`] with a fresh, empty store so MemoryStore, SQLite and Postgres stay interchangeable.
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState, Role, User},
+    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, Role, User},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore},
 };
@@ -11,6 +11,7 @@ fn escrow(id: &str) -> Escrow {
     Escrow {
         id: id.into(),
         buyer_id: Some("buyer".into()),
+        node: NodeKind::Shared,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "parcel".into(),
@@ -169,4 +170,24 @@ pub async fn user_store_contract(store: &dyn UserStore) {
     assert_eq!(store.insert_user(alice, "other".into()).await, Err(StoreError::Conflict));
     let bob = User { id: "bob".into(), role: Role::User, created_at: 12 };
     assert_eq!(store.insert_user(bob, "hash-a".into()).await, Err(StoreError::Conflict));
+
+    // A seller's node connection: saved, replaced as a whole, deleted, kept per user.
+    let conn = |user: &str, address: &str, at: i64| NodeConnection {
+        user_id: user.into(),
+        address: address.into(),
+        tls_cert: "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----".into(),
+        macaroon_enc: vec![1, 2, 3, 4],
+        updated_at: at,
+    };
+    assert_eq!(store.node_connection("alice").await.unwrap(), None);
+    store.put_node_connection(conn("alice", "https://alice.example:10009", 20)).await.unwrap();
+    store.put_node_connection(conn("root", "https://root.example:10009", 21)).await.unwrap();
+    assert_eq!(store.node_connection("alice").await.unwrap(), Some(conn("alice", "https://alice.example:10009", 20)));
+    store.put_node_connection(conn("alice", "https://alice2.example:10009", 30)).await.unwrap();
+    let saved = store.node_connection("alice").await.unwrap().unwrap();
+    assert_eq!((saved.address.as_str(), saved.updated_at), ("https://alice2.example:10009", 30), "replaced");
+    assert!(store.node_connection("root").await.unwrap().is_some(), "other users are untouched");
+    assert!(store.delete_node_connection("alice").await.unwrap());
+    assert!(!store.delete_node_connection("alice").await.unwrap(), "nothing left to delete");
+    assert_eq!(store.node_connection("alice").await.unwrap(), None);
 }

@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 DC="docker compose -f docker-compose.yml"
 CREDS="$(pwd)/creds"
-NODES=(buyer router seller)
+NODES=(buyer router seller seller2)
 
 btc()  { $DC exec -T bitcoind bitcoin-cli -regtest -rpcuser=toshi -rpcpassword=toshi "$@"; }
 lncli() { local n=$1; shift; $DC exec -T "$n" lncli --network=regtest "$@"; }
@@ -67,11 +67,13 @@ open_channel() { # from, to
 echo "==> opening channels"
 open_channel buyer router
 open_channel router seller
+open_channel router seller2
 
 # Peer links drop when containers restart; channels stay inactive until they are re-established.
 echo "==> (re)connecting peers"
 connect buyer router
 connect router seller
+connect router seller2
 
 echo "==> waiting for channels to become active"
 for n in "${NODES[@]}"; do
@@ -91,13 +93,16 @@ done
 
 # The service only ever needs invoice operations (add, settle, cancel, look up, subscribe) and
 # GetInfo for /health. Bake a macaroon limited to exactly that for the seller node it talks to.
-echo "==> baking the restricted service macaroon (seller)"
-$DC exec -T seller sh -c 'rm -f /tmp/toshi.macaroon; lncli --network=regtest bakemacaroon invoices:read invoices:write info:read --save_to=/tmp/toshi.macaroon >/dev/null'
-docker cp "$($DC ps -q seller):/tmp/toshi.macaroon" "$CREDS/seller/toshi.macaroon"
-chmod 644 "$CREDS/seller/toshi.macaroon"
+# seller2 stands in for a second seller who runs their own node and bakes the same kind of macaroon.
+echo "==> baking restricted invoice macaroons (seller, seller2)"
+for n in seller seller2; do
+  $DC exec -T "$n" sh -c 'rm -f /tmp/toshi.macaroon; lncli --network=regtest bakemacaroon invoices:read invoices:write info:read --save_to=/tmp/toshi.macaroon >/dev/null'
+  docker cp "$($DC ps -q "$n"):/tmp/toshi.macaroon" "$CREDS/$n/toshi.macaroon"
+  chmod 644 "$CREDS/$n/toshi.macaroon"
+done
 
 echo "==> done"
 for n in "${NODES[@]}"; do
   echo "  $n  $(pubkey "$n")  channels=$(lncli "$n" getinfo | jget "['num_active_channels']")"
 done
-echo "gRPC: buyer localhost:10001, router localhost:10002, seller localhost:10003"
+echo "gRPC: buyer localhost:10001, router localhost:10002, seller localhost:10003, seller2 localhost:10004"

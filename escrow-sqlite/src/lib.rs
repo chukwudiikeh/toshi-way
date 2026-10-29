@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use escrow_core::{
-    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState, PaymentHash, User},
+    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, User},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore},
 };
@@ -18,8 +18,9 @@ use sqlx::{
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/001_initial.sql"),
     include_str!("migrations/002_open_offers.sql"),
+    include_str!("migrations/003_own_nodes.sql"),
 ];
-const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, amount_sats, description, payment_hash, \
+const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, node, amount_sats, description, payment_hash, \
      invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
 
 pub struct SqliteStore {
@@ -100,10 +101,12 @@ fn hash_from_hex(s: &str) -> Result<PaymentHash, StoreError> {
 fn escrow_from_row(row: &SqliteRow) -> Result<Escrow, StoreError> {
     let payment_hash: Option<String> = row.try_get("payment_hash").map_err(backend)?;
     let state: String = row.try_get("state").map_err(backend)?;
+    let node: String = row.try_get("node").map_err(backend)?;
     Ok(Escrow {
         id: row.try_get("id").map_err(backend)?,
         buyer_id: row.try_get("buyer_id").map_err(backend)?,
         seller_id: row.try_get("seller_id").map_err(backend)?,
+        node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
         description: row.try_get("description").map_err(backend)?,
         payment_hash: payment_hash.as_deref().map(hash_from_hex).transpose()?,
@@ -146,11 +149,12 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for SqliteStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
         .bind(&e.seller_id)
+        .bind(e.node.as_str())
         .bind(e.amount_sats as i64)
         .bind(&e.description)
         .bind(e.payment_hash.map(hex::encode))
@@ -335,6 +339,16 @@ impl Store for SqliteStore {
     }
 }
 
+fn node_connection_from_row(row: &SqliteRow) -> Result<NodeConnection, StoreError> {
+    Ok(NodeConnection {
+        user_id: row.try_get("user_id").map_err(backend)?,
+        address: row.try_get("address").map_err(backend)?,
+        tls_cert: row.try_get("tls_cert").map_err(backend)?,
+        macaroon_enc: row.try_get("macaroon_enc").map_err(backend)?,
+        updated_at: row.try_get("updated_at").map_err(backend)?,
+    })
+}
+
 fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
     let role: String = row.try_get("role").map_err(backend)?;
     Ok(User {
@@ -377,5 +391,43 @@ impl UserStore for SqliteStore {
             .await
             .map_err(backend)?;
         row.as_ref().map(user_from_row).transpose()
+    }
+
+    async fn put_node_connection(&self, c: NodeConnection) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO node_connections (user_id, address, tls_cert, macaroon_enc, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET address = excluded.address, tls_cert = excluded.tls_cert, \
+                 macaroon_enc = excluded.macaroon_enc, updated_at = excluded.updated_at",
+        )
+        .bind(&c.user_id)
+        .bind(&c.address)
+        .bind(&c.tls_cert)
+        .bind(&c.macaroon_enc)
+        .bind(c.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError> {
+        let row = sqlx::query(
+            "SELECT user_id, address, tls_cert, macaroon_enc, updated_at FROM node_connections WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        row.as_ref().map(node_connection_from_row).transpose()
+    }
+
+    async fn delete_node_connection(&self, user_id: &str) -> Result<bool, StoreError> {
+        let res = sqlx::query("DELETE FROM node_connections WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+        Ok(res.rows_affected() > 0)
     }
 }

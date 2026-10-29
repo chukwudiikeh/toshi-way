@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use escrow_core::{
-    mock::MockLightning,
-    model::{Escrow, NodeInvoiceState, Preimage},
+    mock::{MockDirectory, MockLightning},
+    adapter::AdapterError,
+    model::{Escrow, NodeInvoiceState, NodeKind, Preimage},
     service::{EscrowService, NewEscrow, ServiceError},
     state::EscrowState,
     store::MemoryStore,
@@ -417,4 +418,83 @@ async fn a_named_buyer_cannot_be_replaced_by_someone_else_accepting() {
     let e = f.svc.create(offer(T0 + HOUR), T0).await.unwrap();
     assert!(matches!(f.svc.accept(&e.id, secret(1).hash(), "mallory", T0).await, Err(ServiceError::Invalid(_))));
     assert_eq!(f.node.state(&secret(1).hash()), None, "no invoice was issued");
+}
+
+fn offer_from(seller: &str) -> NewEscrow {
+    NewEscrow { seller_id: seller.into(), ..offer(T0 + HOUR) }
+}
+
+#[tokio::test]
+async fn each_sellers_escrow_lives_on_that_sellers_own_node() {
+    let (alice_node, bob_node, shared) = (MockLightning::new(), MockLightning::new(), MockLightning::new());
+    let dir = MockDirectory::new(Some(shared.clone()));
+    dir.connect_seller("alice", alice_node.clone());
+    dir.connect_seller("bob", bob_node.clone());
+    let svc = EscrowService::new(dir, Arc::new(MemoryStore::new()), TimingConfig::default());
+
+    let (pa, pb, pc) = (secret(1), secret(2), secret(3));
+    let a = svc.create(offer_from("alice"), T0).await.unwrap();
+    let b = svc.create(offer_from("bob"), T0).await.unwrap();
+    let c = svc.create(offer_from("carol"), T0).await.unwrap(); // no node of her own
+    assert_eq!((a.node, b.node, c.node), (NodeKind::Own, NodeKind::Own, NodeKind::Shared));
+
+    svc.accept(&a.id, pa.hash(), "buyer", T0).await.unwrap();
+    svc.accept(&b.id, pb.hash(), "buyer", T0).await.unwrap();
+    svc.accept(&c.id, pc.hash(), "buyer", T0).await.unwrap();
+
+    // Each invoice exists on its own seller's node and on no other.
+    for (hash, on) in [(pa.hash(), "alice"), (pb.hash(), "bob"), (pc.hash(), "shared")] {
+        let nodes = [("alice", &alice_node), ("bob", &bob_node), ("shared", &shared)];
+        for (name, node) in nodes {
+            assert_eq!(node.state(&hash).is_some(), name == on, "invoice for {on} on node {name}");
+        }
+    }
+
+    // Paying and releasing alice's escrow settles on alice's node only.
+    let ev = alice_node.pay(&pa.hash());
+    svc.apply_event(ev, T0 + 1).await.unwrap();
+    let done = svc.release(&a.id, &pa, "alice", T0 + 2).await.unwrap();
+    assert_eq!(done.state, EscrowState::Settled);
+    assert_eq!((alice_node.settle_calls(), bob_node.settle_calls(), shared.settle_calls()), (1, 0, 0));
+    assert_eq!(alice_node.state(&pa.hash()), Some(NodeInvoiceState::Settled));
+}
+
+#[tokio::test]
+async fn a_seller_with_no_node_cannot_create_an_escrow_when_there_is_no_shared_node() {
+    let dir = MockDirectory::new(None);
+    dir.connect_seller("alice", MockLightning::new());
+    let svc = EscrowService::new(dir, Arc::new(MemoryStore::new()), TimingConfig::default());
+    assert!(svc.create(offer_from("alice"), T0).await.is_ok());
+    let err = svc.create(offer_from("bob"), T0).await.unwrap_err();
+    assert!(matches!(err, ServiceError::Adapter(AdapterError::NoNode(_))), "{err}");
+}
+
+#[tokio::test]
+async fn one_sellers_node_going_down_does_not_affect_another_sellers_escrows() {
+    let (alice_node, bob_node) = (MockLightning::new(), MockLightning::new());
+    let dir = MockDirectory::new(None);
+    dir.connect_seller("alice", alice_node.clone());
+    dir.connect_seller("bob", bob_node.clone());
+    let svc = EscrowService::new(dir, Arc::new(MemoryStore::new()), TimingConfig::default());
+    let (pa, pb) = (secret(1), secret(2));
+    let a = svc.create(offer_from("alice"), T0).await.unwrap();
+    let b = svc.create(offer_from("bob"), T0).await.unwrap();
+    svc.accept(&a.id, pa.hash(), "buyer", T0).await.unwrap();
+    svc.accept(&b.id, pb.hash(), "buyer", T0).await.unwrap();
+    for (node, p) in [(&alice_node, &pa), (&bob_node, &pb)] {
+        let ev = node.pay(&p.hash());
+        svc.apply_event(ev, T0 + 1).await.unwrap();
+    }
+
+    alice_node.set_offline(true);
+    assert!(matches!(svc.release(&a.id, &pa, "alice", T0 + 2).await, Err(ServiceError::Adapter(_))));
+    assert_eq!(svc.get(&a.id).await.unwrap().state, EscrowState::Locked, "alice's escrow is untouched");
+    assert_eq!(svc.release(&b.id, &pb, "bob", T0 + 2).await.unwrap().state, EscrowState::Settled);
+
+    // The scheduler keeps going past a node it cannot reach.
+    let report = svc.tick(T0 + HOUR + 1).await.unwrap();
+    assert_eq!(report.errors.len(), 1, "only alice's escrow could not be cancelled");
+    alice_node.set_offline(false);
+    svc.tick(T0 + HOUR + 2).await.unwrap();
+    assert_eq!(svc.get(&a.id).await.unwrap().state, EscrowState::Refunded);
 }
