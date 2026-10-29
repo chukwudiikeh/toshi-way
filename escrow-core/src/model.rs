@@ -197,6 +197,55 @@ pub struct User {
     pub created_at: i64,
 }
 
+/// An audit entry with its position in the log. The position only ever grows, so it serves as a
+/// cursor for anything that works through the log in order, such as webhook delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRow {
+    pub seq: i64,
+    pub entry: AuditEntry,
+}
+
+/// Where a business wants to be told about changes to its escrows, and how delivery is going.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Webhook {
+    pub id: String,
+    pub user_id: String,
+    pub url: String,
+    /// The signing secret, sealed by the application. The database never holds it in the clear.
+    pub signing_key_enc: Vec<u8>,
+    pub created_at: i64,
+    /// The last audit-log position delivered. Deliveries start after this, in order.
+    pub last_seq: i64,
+    /// Failed tries in a row for the next event; 0 when delivery is healthy.
+    pub attempts: u32,
+    pub next_attempt_at: i64,
+    /// When delivery began failing, while it still is; `None` when healthy.
+    pub failing_since: Option<i64>,
+    /// Set when delivery has failed for too long and the endpoint was switched off.
+    pub disabled_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    /// How the last try went: an HTTP status such as "200", or a short reason such as "timeout".
+    pub last_status: Option<String>,
+}
+
+impl std::fmt::Debug for Webhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Webhook").field("id", &self.id).field("url", &self.url).field("signing_key_enc", &"<sealed>").finish_non_exhaustive()
+    }
+}
+
+/// What a delivery attempt changed about an endpoint's progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookProgress {
+    pub last_seq: i64,
+    pub attempts: u32,
+    pub next_attempt_at: i64,
+    pub failing_since: Option<i64>,
+    pub disabled_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    pub last_status: Option<String>,
+}
+
 /// What an API key is allowed to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {

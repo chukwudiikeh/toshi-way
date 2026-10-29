@@ -10,6 +10,7 @@ pub mod error;
 pub mod ratelimit;
 pub mod rates;
 pub mod routes;
+pub mod webhooks;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -73,6 +74,12 @@ pub(crate) struct IdempotencyCache {
     pub(crate) entries: Mutex<HashMap<(String, String), (String, serde_json::Value)>>,
 }
 
+/// What it takes to offer webhooks: the key that seals signing secrets, and a way to reach receivers.
+pub struct WebhookSupport {
+    pub key: escrow_lnd::creds::CredentialKey,
+    pub sender: Arc<dyn webhooks::Sender>,
+}
+
 pub struct AppState<A, S> {
     pub service: Arc<EscrowService<A, S>>,
     pub users: S,
@@ -85,6 +92,8 @@ pub struct AppState<A, S> {
     pub(crate) node_changes: Arc<tokio::sync::RwLock<()>>,
     /// Where display-only fiat values come from. Off unless configured.
     pub(crate) rates: Arc<dyn rates::RateProvider>,
+    /// `None` when there is no credential key, in which case webhooks cannot be set up.
+    pub(crate) webhooks: Option<Arc<WebhookSupport>>,
 }
 
 impl<A, S: Clone> Clone for AppState<A, S> {
@@ -98,6 +107,7 @@ impl<A, S: Clone> Clone for AppState<A, S> {
             idempotency: self.idempotency.clone(),
             node_changes: self.node_changes.clone(),
             rates: self.rates.clone(),
+            webhooks: self.webhooks.clone(),
         }
     }
 }
@@ -113,7 +123,14 @@ impl<A, S: Clone> AppState<A, S> {
             idempotency: Arc::new(IdempotencyCache::default()),
             node_changes: Arc::new(tokio::sync::RwLock::new(())),
             rates: Arc::new(rates::Disabled),
+            webhooks: None,
         }
+    }
+
+    /// Offer webhooks, sealing signing secrets under `support.key`.
+    pub fn with_webhooks(mut self, support: WebhookSupport) -> Self {
+        self.webhooks = Some(Arc::new(support));
+        self
     }
 
     /// Use `rates` for display-only fiat values (the default is none).
@@ -198,6 +215,9 @@ where
         )
         .route("/api/v1/me/api-keys", get(routes::api_key_list::<A, S>).post(routes::api_key_create::<A, S>))
         .route("/api/v1/me/api-keys/{id}", delete(routes::api_key_revoke::<A, S>))
+        .route("/api/v1/me/webhooks", get(routes::webhook_list::<A, S>).post(routes::webhook_create::<A, S>))
+        .route("/api/v1/me/webhooks/{id}", delete(routes::webhook_delete::<A, S>))
+        .route("/api/v1/me/webhooks/{id}/test", post(routes::webhook_test::<A, S>))
         .route("/api/v1/escrows", post(routes::create_escrow::<A, S>).get(routes::list_mine::<A, S>))
         .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
         .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))
