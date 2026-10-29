@@ -2,7 +2,7 @@
 // here decides what is true about an escrow (the server does that), it only decides what to put in
 // front of the person and in what order.
 
-import type { Escrow, EscrowState } from "./schemas";
+import type { Escrow, EscrowState, Totals } from "./schemas";
 
 export type Role = "buyer" | "seller" | "arbiter";
 export type Tab = "active" | "completed" | "all";
@@ -125,7 +125,7 @@ export type Summary = {
 };
 
 /** The headline numbers. Only money you are a party to counts: an arbiter's escrows are not theirs. */
-export function summarize(escrows: Escrow[], now: number): Summary {
+export function summarize(escrows: Escrow[], now: number, totals?: Totals): Summary {
   const s: Summary = {
     attention: todos(escrows, now).length,
     active: escrows.filter(isActive).length,
@@ -149,6 +149,11 @@ export function summarize(escrows: Escrow[], now: number): Summary {
       s.refunded.count += 1;
       if (role === "buyer" || role === "seller") s.refunded.sats += e.amount_sats;
     }
+  }
+  // The list holds every escrow in play but only the newest that have ended; the server's totals cover them all.
+  if (totals) {
+    s.settled = { ...totals.settled };
+    s.refunded = { ...totals.refunded };
   }
   return s;
 }

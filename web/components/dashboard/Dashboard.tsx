@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, describeError } from "@/lib/api";
 import { serverNow, useServerNow } from "@/lib/clock";
 import { greeting, summarize, todos } from "@/lib/dashboard";
-import type { ArbiterKey, Escrow, NodeInfo } from "@/lib/schemas";
+import type { ArbiterKey, Escrow, NodeInfo, Totals } from "@/lib/schemas";
 import { rememberUserId, type Session } from "@/lib/session";
 import { Notice, Spinner } from "../ui";
 import { EscrowTable } from "./EscrowTable";
@@ -14,6 +14,7 @@ import { AccountCard, Activity, ArbiterCard, Attention, NodeCard, StatCards } fr
 /** What a signed-in buyer, seller or arbiter sees first: where things stand, and what needs them. */
 export function Dashboard({ session }: { session: Session }) {
   const [escrows, setEscrows] = useState<Escrow[] | null>(null);
+  const [totals, setTotals] = useState<Totals | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [node, setNode] = useState<NodeInfo | null>(null);
   const [arbiterKey, setArbiterKey] = useState<ArbiterKey | null>(null);
@@ -24,9 +25,10 @@ export function Dashboard({ session }: { session: Session }) {
     let alive = true;
     const load = async () => {
       try {
-        const { escrows } = await api.listMine();
+        const { escrows, totals } = await api.listMine();
         if (!alive) return;
         setEscrows(escrows);
+        setTotals(totals);
         setError(null);
         // An escrow tells us who we are, so a returning visitor's id is always shown.
         const party = escrows.find((e) => e.your_role === "buyer" || e.your_role === "seller");
@@ -47,7 +49,7 @@ export function Dashboard({ session }: { session: Session }) {
     };
   }, []);
 
-  const summary = useMemo(() => summarize(escrows ?? [], now), [escrows, now]);
+  const summary = useMemo(() => summarize(escrows ?? [], now, totals), [escrows, now, totals]);
   const attention = useMemo(() => todos(escrows ?? [], now), [escrows, now]);
   const asArbiter = (escrows ?? []).filter((e) => e.your_role === "arbiter").length;
 
@@ -83,6 +85,12 @@ export function Dashboard({ session }: { session: Session }) {
           <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
             <div className="min-w-0 space-y-6">
               <Attention items={attention} now={now} />
+              {totals && totals.escrows > escrows.length && (
+                <p className="text-xs text-neutral-500">
+                  Showing {escrows.length} of your {totals.escrows} escrows: everything still in play and your newest
+                  finished ones. The totals above count all of them.
+                </p>
+              )}
               <EscrowTable escrows={escrows} now={now} />
             </div>
             <aside className="min-w-0 space-y-4">
