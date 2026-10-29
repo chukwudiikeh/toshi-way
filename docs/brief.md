@@ -202,7 +202,7 @@ web/app/...           pages above
 
 ## 7. Known limitations (not your job, but don't be surprised)
 
-- The seller invites a buyer by user id, so the buyer has to send the seller their id. A shareable "open offer" link where whoever opens it becomes the buyer needs a backend change (the escrow model requires a buyer at creation). Raise it if the UX hurts.
+- ~~The seller invites a buyer by user id.~~ Solved in phase 5 (see `docs/flow.md`, section 15): `buyer_id` is optional on create, and the first user to accept an open offer becomes its buyer.
 - The idempotency cache is in server memory; it resets when the server restarts.
 - The server uses an admin macaroon on regtest; production should use one limited to invoice operations.
 - Hold times are limited to 6 hours by what the Lightning network safely supports (see `docs/flow.md`, section 7). Don't offer longer.

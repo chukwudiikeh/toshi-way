@@ -42,6 +42,11 @@ describe("api client", () => {
     expect(JSON.parse(init.body)).toEqual({ preimage: "a".repeat(64) });
   });
 
+  it("reads the caller's id and role from /me", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(200, { id: "u_1", role: "user" })));
+    await expect(api.me({ token: "tw_abc" })).resolves.toEqual({ id: "u_1", role: "user" });
+  });
+
   it("signs out on 401", async () => {
     setSession({ token: "tw_old", kind: "user", userId: null });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(401, { error: { code: "unauthorized", message: "x" } })));

@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    auth::{new_token, new_user_id, party_of, hash_token, Auth, Party},
+    auth::{hash_token, is_prospective_buyer, new_token, new_user_id, party_of, Auth, Party},
     error::ApiError,
     AppState,
 };
@@ -76,7 +76,9 @@ where
     S: Store + UserStore + Clone + 'static,
 {
     let escrow = st.service.get(id).await?;
-    let party = party_of(&escrow, user).ok_or_else(ApiError::not_found)?;
+    let party = party_of(&escrow, user)
+        .or_else(|| is_prospective_buyer(&escrow, user).then_some(Party::Buyer))
+        .ok_or_else(ApiError::not_found)?;
     Ok((escrow, party))
 }
 
@@ -97,6 +99,11 @@ where
     }
 }
 
+/// Who the caller is, so a client holding only a token can learn its id and role.
+pub async fn me(Auth(user): Auth) -> Json<Value> {
+    Json(json!({ "id": user.id, "role": user.role.as_str() }))
+}
+
 pub async fn register<A, S>(State(st): State<AppState<A, S>>) -> Result<(StatusCode, Json<Value>), ApiError>
 where
     A: LightningAdapter + 'static,
@@ -111,7 +118,9 @@ where
 
 #[derive(Deserialize)]
 pub struct CreateReq {
-    buyer_id: String,
+    /// Omit (or leave empty) for an open offer: the first user to accept it becomes the buyer.
+    #[serde(default)]
+    buyer_id: Option<String>,
     amount_sats: u64,
     description: String,
     /// Seconds from now until the settle-by deadline.
@@ -144,15 +153,18 @@ where
             format!("description is limited to {} characters", st.config.max_description_len),
         ));
     }
-    match st.users.get_user(&req.buyer_id).await? {
-        Some(b) if b.role == Role::User => {}
-        _ => return Err(ApiError::bad_request("unknown_buyer", "buyer_id does not match a user")),
+    let buyer_id = req.buyer_id.as_deref().map(str::trim).filter(|b| !b.is_empty()).map(str::to_string);
+    if let Some(buyer_id) = &buyer_id {
+        match st.users.get_user(buyer_id).await? {
+            Some(b) if b.role == Role::User => {}
+            _ => return Err(ApiError::bad_request("unknown_buyer", "buyer_id does not match a user")),
+        }
     }
 
     // Idempotency-Key: a repeated create returns the first result instead of a second escrow.
     let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body_hash = hex::encode(Sha256::digest(
-        format!("{}|{}|{}|{}", req.buyer_id, req.amount_sats, req.description, req.hold_secs).as_bytes(),
+        format!("{}|{}|{}|{}", buyer_id.as_deref().unwrap_or(""), req.amount_sats, req.description, req.hold_secs).as_bytes(),
     ));
     let mut cache = match &key {
         Some(_) => Some(st.idempotency.entries.lock().await),
@@ -176,7 +188,7 @@ where
         .service
         .create(
             NewEscrow {
-                buyer_id: req.buyer_id,
+                buyer_id,
                 seller_id: user.id.clone(),
                 amount_sats: req.amount_sats,
                 description: req.description,
@@ -312,8 +324,12 @@ where
     let (escrow, party) = load(&st, &id, &user).await?;
     // Cancelling after the buyer has paid gives the buyer a refund, so the buyer may not do it
     // alone: that would strip the seller's protection. Sellers and operators may.
-    if party == Party::Buyer && escrow.state != EscrowState::InvoiceIssued {
+    if party == Party::Buyer && !matches!(escrow.state, EscrowState::Created | EscrowState::InvoiceIssued) {
         return Err(ApiError::forbidden("the buyer can only cancel before paying"));
+    }
+    // Someone who has only seen an open offer's link is not its buyer and cannot decline it.
+    if party == Party::Buyer && escrow.buyer_id.as_deref() != Some(user.id.as_str()) {
+        return Err(ApiError::forbidden("only the buyer can decline an offer"));
     }
     let reason = format!("cancelled by {}", party.as_str());
     let escrow = st.service.cancel(&id, &user.id, &reason, (st.now)()).await?;

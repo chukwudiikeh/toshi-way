@@ -311,6 +311,61 @@ Checked by hand as well: stopping `toshi-server` mid-escrow shows "can't reach t
 
 ---
 
+## 13. Phase 5, step 1: offers that can end, and `GET /api/v1/me`
+
+Two gaps from section 12.
+
+- **`CREATED` offers can now end.** Added the transition `CREATED -> EXPIRED_UNPAID` (no new state, so the web schema is unchanged). `cancel` on a `CREATED` escrow moves it there without any node call, since no invoice exists. The seller and operator can do it, and so can the buyer (declining). `tick` also expires a `CREATED` escrow once `now >= deadline_at`, so abandoned offers leave the operator queue by themselves. If the buyer accepts at the same moment, the compare-and-set decides and the loser gets `invalid_state`. The UI text for `EXPIRED_UNPAID` was reworded from "invoice expired" to "ended without a payment".
+- **`GET /api/v1/me`** returns `{id, role}`. Sign-in now uses it, which removed the operator-endpoint probe, the 403 check and the optional user-id field.
+
+Tests: 4 new API tests (withdraw, decline plus stranger gets 404, expiry at the deadline, `/me`) and one web test for `api.me`. `cargo test --workspace` and the 45 web unit tests pass; `npm run lint` and `npm run build` are clean. The Playwright test was not re-run in this step.
+
+Environment note: this Codespace had no Rust or `protoc`; installed with rustup and `apt install protobuf-compiler`.
+
+---
+
+## 14. Phase 5, step 2: restricted macaroon and a restart test on the real node
+
+- **Restricted macaroon.** `regtest/setup.sh` now bakes `toshi.macaroon` on the seller node with `invoices:read invoices:write info:read`, exactly what the adapter uses (add/settle/cancel/lookup/subscribe invoices, plus `GetInfo` for `/health`). Checked by hand: with it `getinfo` works and `listchannels` / `walletbalance` answer `permission denied`. `toshi-server` defaults to it, and the seller adapter in the real-node tests uses it, so those tests prove nothing more is needed. The buyer side of the tests still uses `admin.macaroon` because it plays a wallet.
+- **Restart test** (`restart_mid_escrow_reconciles_with_the_live_node`, real LND, on-disk SQLite). Three escrows are open when the "process" dies: A and B locked, C invoiced but unpaid. While it is down the node cancels B's hold and the buyer pays C. A new store, adapter and service open the same file; `reconcile` leaves A `LOCKED`, moves B to `REFUNDED` and C to `LOCKED`, and then A and C settle with their secrets while B cannot be released. This is the "restart mid-escrow" acceptance criterion, now proven against a real node.
+- **E2E.** Added two Playwright tests (withdraw and decline an offer; sign-in via `/me`). All four pass. The badge for `EXPIRED_UNPAID` now reads "Ended unpaid".
+- `scripts/demo.sh` passes both paths with the server on the restricted macaroon; neither server nor web log contains a 64-hex string.
+
+### Things that went wrong on the way
+
+- **Containers could not talk to each other in this Codespace**, so LND sat forever after "Database(s) now open" and `setup.sh` timed out on "buyer wallet". Cause: the legacy iptables tables have `FORWARD DROP` and `bridge-nf-call-iptables=1` sends bridged traffic through them. Fix used: `sudo sysctl -w net.bridge.bridge-nf-call-iptables=0` (lasts until reboot), then restart the LND containers and re-run `setup.sh`.
+- Playwright had no system Chrome here: used `npx playwright install chromium`, `npx playwright install-deps chromium`, and `PW_CHANNEL=chromium npm run e2e`.
+- `adapter_settle_cancel_and_idempotency` failed once on the first run right after `setup.sh` and passed on every later run (three full runs); put down to the nodes still settling, not reproduced.
+
+---
+
+## 15. Phase 5, step 3: migrations and open-offer links
+
+The seller no longer needs the buyer's user id: leave it empty and the escrow page is a link anyone can open.
+
+- **Migrations** (`escrow-sqlite`). The schema is now an ordered list of SQL files (`src/migrations/001_initial.sql`, `002_open_offers.sql`); SQLite's `user_version` records how many have run. Each runs in its own transaction with foreign keys off (SQLite needs that to rebuild a table others reference) and a `foreign_key_check` before it commits. A database newer than the build is refused. `001` is the old `schema.sql`, so databases created before migrations existed (version 0, tables present) are adopted and upgraded in place. A test builds exactly such a database with an escrow and an audit row in it, opens it, and checks the data survived, `buyer_id` may now be empty, and the version is 2. The live demo database from earlier in this session was upgraded the same way when the new server opened it. Rule from now on: never edit a shipped migration, add a new one.
+- **Model.** `Escrow.buyer_id` is `Option<String>`. `accept` on an open offer sets the buyer to the accepting user in the same compare-and-set transition that issues the invoice, so two people racing cannot both win; the loser gets `invalid_state`. (As before, the loser may have created an unused hold invoice on the node first; it expires on its own.) A named buyer cannot be replaced by someone else accepting, and the seller cannot accept their own offer.
+- **API.** `buyer_id` is optional on create (blank counts as omitted; an unknown id is still rejected). Anyone signed in who has the link can read an open offer that is still `CREATED` and sees `your_role: "buyer"`; they cannot decline it (403), it is not in their list, and once someone has accepted it everyone else gets 404 again.
+- **Web.** The form's buyer field is optional with an explanation. A visitor with no account who follows an offer link can create one right on that page (the token is shown once, as on the home page) and goes straight back to the offer. The seller's page warns that the first person to accept becomes the buyer. Tests: 6 Rust tests (core flows, API, store contract, migration) and 2 Vitest tests; the Playwright suite now has five tests, including a new-visitor open-offer run, and all pass.
+
+Trade-off worth knowing: an open offer's link is a bearer capability. Whoever opens it first and accepts is the buyer, so it should be sent only to the person you are dealing with. Naming the buyer is still available.
+
+Not done from the optional list: WebLN one-click payment, an in-app QR scanner, and a Postgres store.
+
+---
+
+## 16. Phase 5, step 4: WebLN, a camera scanner and a PostgreSQL store
+
+- **WebLN** (`web/lib/webln.ts`). If the browser has a `window.webln` wallet, the invoice box offers "Pay with my wallet". The invoice goes to the user's own wallet; the app does not wait for the payment to finish, because a wallet may keep a hold invoice's `sendPayment` pending until the escrow ends (it stops waiting after 3 s), and it never says the funds are locked: the page changes only when the API reports `LOCKED`. A refused connection or a failed payment is shown. QR and copy-paste remain.
+- **Camera scan** (`web/lib/scan.ts`, `components/escrow/Scanner.tsx`). On the seller's release form, "Scan the buyer's QR" uses the browser's own `BarcodeDetector` and camera (button only appears where both exist; frames never leave the device, no library). A scan only fills the secret field; releasing still takes a button press. Accepted: the buyer's release link for this escrow, or a bare 64-hex secret. Refused: a link for another escrow, short codes, 63/65 characters, non-hex, invoices, empty text.
+- **PostgreSQL** (`escrow-postgres`). Same `Store` and `UserStore` traits, `sqlx` Postgres, a `schema_migrations` table and an advisory lock so two servers starting together cannot both migrate. State changes are the same compare-and-set inside one transaction (under READ COMMITTED the second writer re-checks the state and updates nothing). `toshi-server` uses it when `DATABASE_URL` is set, otherwise SQLite. The database comes from the compose file's `postgres` service behind a `postgres` profile, so `setup.sh` does not start it. It starts at the current schema (open offers included): there are no old Postgres databases to upgrade.
+
+Verified: the shared store contract and user contract pass on a real PostgreSQL, plus a test that two concurrent transitions of one escrow yield exactly one winner and one audit entry, a duplicate payment hash is refused, and reconnecting keeps data. With `toshi-server` on PostgreSQL, `scripts/demo.sh` passes both demo paths against the real Lightning nodes; the rows end up `SETTLED` and `REFUNDED`, and no column in the schema could hold a secret. The Playwright suite has a sixth test: a fake WebLN wallet (bridged to `lncli`) pays, a stubbed camera and detector scan a wrong-escrow code (refused) and then the right one (fills the field, no release until pressed), then the release settles.
+
+Not verified here: a real WebLN wallet extension and a real phone camera, since neither exists in this environment; the browser APIs were stubbed.
+
+---
+
 ## Next
 
-Phase 4 hardening: let `CREATED` offers be withdrawn or expire, a `GET /api/v1/me` endpoint, a restricted invoice macaroon instead of `admin.macaroon`, and a restart test against the real node. Optional: WebLN one-click payment, an in-app QR scanner.
+Pick the lead demo use case and rehearse. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

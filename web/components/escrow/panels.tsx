@@ -5,9 +5,12 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
 import { formatSats } from "@/lib/clock";
 import { DisputeForm, SecretInput, type Escrow, type Invoice } from "@/lib/schemas";
+import { scannerSupported, secretFromScan } from "@/lib/scan";
 import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } from "@/lib/secret";
+import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
 import { useStoredSecret } from "./hooks";
+import { Scanner } from "./Scanner";
 
 type PanelProps = {
   escrow: Escrow;
@@ -108,7 +111,7 @@ function NextSteps({ escrow }: { escrow: Escrow }) {
       : seller
         ? "Cancelled. The buyer was refunded."
         : "Refunded to the buyer.",
-    EXPIRED_UNPAID: "The invoice expired before it was paid. Nothing was paid and nothing is owed.",
+    EXPIRED_UNPAID: "This offer ended without a payment: it was withdrawn, declined or its time ran out. Nothing was paid and nothing is owed.",
     FAILED: "Something went wrong between the escrow and the Lightning node. An operator needs to look at it.",
   };
   return <p className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">{text[escrow.state]}</p>;
@@ -131,7 +134,7 @@ function FinalSummary({ escrow }: { escrow: Escrow }) {
     case "REFUNDED":
       return <Notice tone="success">{formatSats(escrow.amount_sats)} returned to the buyer.</Notice>;
     case "EXPIRED_UNPAID":
-      return <Notice tone="info">The invoice expired unpaid.</Notice>;
+      return <Notice tone="info">Ended without a payment.</Notice>;
     case "FAILED":
       return <Notice tone="error">Needs operator attention. Your funds are governed by the Lightning node.</Notice>;
     default:
@@ -178,6 +181,21 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
           <Button onClick={accept} busy={actions.busy === "accept"}>
             Accept offer of {formatSats(escrow.amount_sats)}
           </Button>
+          {escrow.buyer_id ? (
+            <ConfirmButton
+              confirmText="Decline this offer? Nothing has been paid."
+              confirmLabel="Yes, decline"
+              variant="danger"
+              busy={actions.busy === "cancel"}
+              onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
+            >
+              Decline
+            </ConfirmButton>
+          ) : (
+            <p className="text-xs text-neutral-500">
+              Accepting makes you the buyer of this offer. If you are not the person it was meant for, close this page.
+            </p>
+          )}
         </div>
       );
     case "INVOICE_ISSUED":
@@ -253,6 +271,29 @@ function SecretHealth({ stored }: { stored: ReturnType<typeof useStoredSecret> }
 function InvoiceBox({ escrow }: { escrow: Escrow }) {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wallet, setWallet] = useState(false);
+  const [walletMsg, setWalletMsg] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [paying, setPaying] = useState(false);
+
+  // Wallet extensions inject `window.webln` after load, so look once the page is up.
+  useEffect(() => {
+    const t = setTimeout(() => setWallet(getWebLN() !== null), 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  async function payWithWallet(request: string) {
+    setPaying(true);
+    setWalletMsg(null);
+    try {
+      await payWithWebLN(request);
+      // We do not claim the funds are locked: this page changes only when the API says so.
+      setWalletMsg({ tone: "info", text: "Payment sent to your wallet. This page updates once the node confirms the funds are locked." });
+    } catch (err) {
+      setWalletMsg({ tone: "error", text: err instanceof Error ? err.message : "The wallet could not pay." });
+    } finally {
+      setPaying(false);
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -284,6 +325,14 @@ function InvoiceBox({ escrow }: { escrow: Escrow }) {
         </div>
         <div className="text-sm font-medium">Scan with a Lightning wallet to pay {formatSats(escrow.amount_sats)}</div>
       </div>
+      {wallet && (
+        <div className="space-y-2">
+          <Button onClick={() => payWithWallet(invoice.payment_request)} busy={paying}>
+            Pay {formatSats(escrow.amount_sats)} with my wallet
+          </Button>
+          {walletMsg && <Notice tone={walletMsg.tone}>{walletMsg.text}</Notice>}
+        </div>
+      )}
       <CopyField value={invoice.payment_request} label="Copy invoice" />
       {expires && <Countdown until={expires} label="Pay within" endedText="Expired" />}
       {process.env.NODE_ENV === "development" && (
@@ -361,16 +410,16 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
   const refund = (
     <ConfirmButton
       confirmText={
-        escrow.state === "INVOICE_ISSUED"
+        escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED"
           ? "Withdraw this offer? The buyer won't be able to pay."
           : `Give the buyer their ${formatSats(escrow.amount_sats)} back? You will not be paid. This can't be undone.`
       }
-      confirmLabel={escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Refund the buyer"}
+      confirmLabel={escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Refund the buyer"}
       variant="danger"
       busy={actions.busy === "cancel"}
       onConfirm={() => actions.run("cancel", () => api.cancel(escrow.id))}
     >
-      {escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Give refund"}
+      {escrow.state === "CREATED" || escrow.state === "INVOICE_ISSUED" ? "Withdraw offer" : "Give refund"}
     </ConfirmButton>
   );
 
@@ -381,8 +430,19 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           <div className="text-sm font-medium">Link for the buyer</div>
           <CopyField value={`${appUrl()}/escrows/${escrow.id}`} label="Copy link" />
           <p className="text-xs text-neutral-500">
-            The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it.
+            {escrow.buyer_id ? (
+              <>
+                The buyer must be signed in as <span className="font-mono">{escrow.buyer_id}</span> to open it.
+              </>
+            ) : (
+              <>
+                This is an open offer: <strong>the first person to open the link and accept becomes the buyer</strong>,
+                so send it only to the person you are dealing with.
+              </>
+            )}{" "}
+            The offer lapses on its own if nobody has accepted by the deadline.
           </p>
+          {refund}
         </div>
       );
     case "INVOICE_ISSUED":
@@ -440,6 +500,26 @@ function ReleaseForm({
 }) {
   const [value, setValue] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [canScan, setCanScan] = useState(false);
+
+  // Feature detection needs the browser, so it runs after mount.
+  useEffect(() => {
+    const t = setTimeout(() => setCanScan(scannerSupported()), 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  // A scan only fills the field. Releasing still takes a deliberate press of the button.
+  function onScan(text: string) {
+    const result = secretFromScan(text, escrow.id);
+    if ("error" in result) {
+      setError(result.error);
+      return;
+    }
+    setValue(result.secret);
+    setError(null);
+    setScanning(false);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -480,6 +560,14 @@ function ReleaseForm({
           maxLength={80}
         />
       </Field>
+      {canScan &&
+        (scanning ? (
+          <Scanner onText={onScan} onClose={() => setScanning(false)} />
+        ) : (
+          <Button variant="secondary" onClick={() => setScanning(true)}>
+            Scan the buyer&apos;s QR
+          </Button>
+        ))}
       <Button type="submit" busy={actions.busy === "release"}>
         Release {formatSats(escrow.amount_sats)}
       </Button>

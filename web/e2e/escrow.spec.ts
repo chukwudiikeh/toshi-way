@@ -141,3 +141,125 @@ test("refund path: a 62 second hold is refunded with nobody acting", async ({ br
   }
   await expect(buyer.page.getByText("Your payment was cancelled and the funds are back in your wallet.")).toBeVisible();
 });
+
+test("an offer nobody has accepted can be withdrawn by the seller or declined by the buyer", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  const withdrawn = await createEscrow(seller, buyer.id, "e2e withdrawn", ["30", "minutes"]);
+  await seller.page.getByRole("button", { name: "Withdraw offer" }).click();
+  await seller.page.getByRole("button", { name: "Withdraw offer" }).last().click();
+  await expect(stateBadge(seller.page, "Ended unpaid")).toBeVisible();
+  await buyer.page.goto(`/escrows/${withdrawn}`);
+  await expect(stateBadge(buyer.page, "Ended unpaid")).toBeVisible();
+  await expect(buyer.page.getByRole("button", { name: /Accept offer/ })).toHaveCount(0);
+
+  const declined = await createEscrow(seller, buyer.id, "e2e declined", ["30", "minutes"]);
+  await buyer.page.goto(`/escrows/${declined}`);
+  await buyer.page.getByRole("button", { name: "Decline" }).click();
+  await buyer.page.getByRole("button", { name: "Yes, decline" }).click();
+  await expect(stateBadge(buyer.page, "Ended unpaid")).toBeVisible();
+  await expect(stateBadge(seller.page, "Ended unpaid")).toBeVisible();
+});
+
+test("signing in with a token finds the account's id and role", async ({ browser }) => {
+  const user = await newParty(browser);
+  const token = (await user.page.evaluate(() => localStorage.getItem("toshi.session")))!;
+  const fresh = await browser.newContext();
+  const page = await fresh.newPage();
+  await page.goto("/");
+  await page.getByLabel("Token").fill(JSON.parse(token).token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
+  await expect(page.getByText(user.id)).toBeVisible();
+});
+
+test("open offer: a link anyone can open; a brand-new visitor becomes the buyer", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const { page } = seller;
+
+  await page.goto("/escrows/new");
+  await page.getByLabel("Amount (sats)").fill("1000");
+  await page.getByLabel("Description").fill("e2e open offer");
+  await page.getByLabel("Hold time").fill("30");
+  await page.locator("select").selectOption("minutes");
+  await page.getByRole("button", { name: "Create escrow" }).click(); // no buyer id
+  await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
+  const id = page.url().split("/").pop()!;
+  await expect(page.getByText("the first person to open the link and accept becomes the buyer")).toBeVisible();
+
+  // A visitor with no account follows the link, creates one on the spot, and lands on the offer.
+  const context = await browser.newContext();
+  const visitor = await context.newPage();
+  await visitor.goto(`/escrows/${id}`);
+  await visitor.getByRole("button", { name: "Create account" }).click();
+  await visitor.getByLabel("I have saved my token somewhere safe").check();
+  await visitor.getByRole("button", { name: "Continue" }).click();
+  await expect(visitor.getByText("e2e open offer")).toBeVisible();
+  await expect(visitor.getByRole("button", { name: "Decline" })).toHaveCount(0);
+
+  await visitor.getByRole("button", { name: /Accept offer/ }).click();
+  await expect(visitor.getByRole("button", { name: "Copy invoice" })).toBeVisible();
+  await expect(stateBadge(page, "Awaiting payment")).toBeVisible();
+
+  // Now it belongs to the visitor: a third person gets "not found".
+  const stranger = await newParty(browser);
+  await stranger.page.goto(`/escrows/${id}`);
+  await expect(stranger.page.getByText("Escrow not found")).toBeVisible();
+});
+
+test("one-click WebLN payment by the buyer and camera scan of the release QR by the seller", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  // The buyer's browser has a WebLN wallet; here it pays through the buyer node like a developer would.
+  await buyer.page.exposeFunction("__payFromWallet", (invoice: string) => payInvoice(invoice));
+  await buyer.page.addInitScript(() => {
+    (window as unknown as { webln: unknown }).webln = {
+      enable: async () => {},
+      sendPayment: (invoice: string) => {
+        (window as unknown as { __payFromWallet: (i: string) => void }).__payFromWallet(invoice);
+        return new Promise(() => {}); // a hold invoice keeps the payment pending while locked
+      },
+    };
+  });
+
+  // The seller's browser has a camera that "sees" whatever the test puts in __scanText.
+  await seller.page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__scanText = "";
+    w.BarcodeDetector = class {
+      async detect() {
+        return w.__scanText ? [{ rawValue: w.__scanText }] : [];
+      }
+    };
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 64;
+    navigator.mediaDevices.getUserMedia = async () => canvas.captureStream(5);
+  });
+
+  const id = await createEscrow(seller, buyer.id, "e2e webln and scan", ["30", "minutes"]);
+  await buyer.page.goto(`/escrows/${id}`);
+  await buyer.page.getByRole("button", { name: /Accept offer/ }).click();
+  await buyer.page.getByRole("button", { name: /with my wallet/ }).click();
+  // The page makes no claim of its own: it flips to LOCKED only when the API reports it.
+  for (const p of [buyer.page, seller.page]) await expect(stateBadge(p, "Funds locked")).toBeVisible();
+
+  const secret = await buyer.page.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id);
+  await seller.page.getByRole("button", { name: "Scan the buyer's QR" }).click();
+  // Scanning another escrow's code is refused; this escrow's link fills the field but does not release.
+  await seller.page.evaluate(
+    (t) => ((window as unknown as { __scanText: string }).__scanText = t),
+    `http://localhost:3001/escrows/not-this-one#release=${secret}`,
+  );
+  await expect(seller.page.getByText("That release code is for a different escrow.")).toBeVisible();
+  await seller.page.evaluate(
+    (t) => ((window as unknown as { __scanText: string }).__scanText = t),
+    `http://localhost:3001/escrows/${id}#release=${secret}`,
+  );
+  await expect(seller.page.getByLabel("Release secret")).toHaveValue(secret!);
+  await expect(stateBadge(seller.page, "Funds locked")).toBeVisible();
+
+  await seller.page.getByRole("button", { name: /^Release 1,000 sats/ }).click();
+  for (const p of [seller.page, buyer.page]) await expect(stateBadge(p, "Settled")).toBeVisible();
+});

@@ -13,7 +13,12 @@ use sqlx::{
     Row, SqlitePool,
 };
 
-const SCHEMA: &str = include_str!("schema.sql");
+/// Schema migrations, applied in order. The database remembers how many have run in SQLite's
+/// `user_version`. Never edit a migration that has shipped: add a new one.
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/001_initial.sql"),
+    include_str!("migrations/002_open_offers.sql"),
+];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, amount_sats, description, payment_hash, \
      invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
 
@@ -49,9 +54,40 @@ impl SqliteStore {
             .connect_with(opts)
             .await
             .map_err(backend)?;
-        sqlx::raw_sql(SCHEMA).execute(&pool).await.map_err(backend)?;
+        migrate(&pool).await?;
         Ok(Self { pool })
     }
+}
+
+/// Bring the database up to the latest schema. Each migration runs in its own transaction with
+/// foreign keys off (required by SQLite to rebuild a table that others reference); the foreign
+/// key check afterwards makes sure the rebuild left nothing dangling.
+async fn migrate(pool: &SqlitePool) -> Result<(), StoreError> {
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let applied: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut *conn).await.map_err(backend)?;
+    if applied as usize > MIGRATIONS.len() {
+        return Err(StoreError::Backend(format!(
+            "database schema version {applied} is newer than this build understands ({})",
+            MIGRATIONS.len()
+        )));
+    }
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(applied as usize) {
+        sqlx::query("PRAGMA foreign_keys = OFF").execute(&mut *conn).await.map_err(backend)?;
+        let result = async {
+            let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+            sqlx::raw_sql(sql).execute(&mut *tx).await?;
+            let broken = sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut *tx).await?;
+            if !broken.is_empty() {
+                return Err(sqlx::Error::Protocol(format!("migration {} left broken foreign keys", i + 1)));
+            }
+            sqlx::query(&format!("PRAGMA user_version = {}", i + 1)).execute(&mut *tx).await?;
+            tx.commit().await
+        }
+        .await;
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&mut *conn).await.map_err(backend)?;
+        result.map_err(backend)?;
+    }
+    Ok(())
 }
 
 fn hash_from_hex(s: &str) -> Result<PaymentHash, StoreError> {
@@ -193,6 +229,7 @@ impl Store for SqliteStore {
         // Compare-and-set on the state: only one concurrent actor can move the escrow.
         let res = sqlx::query(
             "UPDATE escrows SET state = ?, updated_at = ?, \
+                 buyer_id = COALESCE(?, buyer_id), \
                  payment_hash = COALESCE(?, payment_hash), \
                  invoice = COALESCE(?, invoice), \
                  invoice_expires_at = COALESCE(?, invoice_expires_at) \
@@ -200,6 +237,7 @@ impl Store for SqliteStore {
         )
         .bind(audit.to_state.as_str())
         .bind(audit.created_at)
+        .bind(&update.buyer_id)
         .bind(update.payment_hash.map(hex::encode))
         .bind(&update.invoice)
         .bind(update.invoice_expires_at)

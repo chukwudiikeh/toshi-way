@@ -47,7 +47,7 @@ States: `CREATED`, `INVOICE_ISSUED`, `LOCKED`, `SETTLED`, `REFUNDED`, `EXPIRED_U
 
 | From | To |
 |------|----|
-| CREATED | INVOICE_ISSUED |
+| CREATED | INVOICE_ISSUED, EXPIRED_UNPAID (offer withdrawn, declined or lapsed) |
 | INVOICE_ISSUED | LOCKED, EXPIRED_UNPAID |
 | LOCKED | SETTLED, REFUNDED, DISPUTED |
 | DISPUTED | REFUNDED, SETTLED (operator, within safe window) |
@@ -59,7 +59,7 @@ States: `CREATED`, `INVOICE_ISSUED`, `LOCKED`, `SETTLED`, `REFUNDED`, `EXPIRED_U
 
 - **Backend:** Rust, Axum, Tokio.
 - **Node:** LND over gRPC (invoices and router services), behind a `LightningAdapter` trait so core logic is testable with a mock.
-- **Database:** SQLite via SQLx for now (escrows, node events, audit log), behind the `Store` trait. PostgreSQL later by adding a crate that passes the same store contract tests.
+- **Database:** SQLx behind the `Store` trait (escrows, node events, audit log, users): SQLite by default (`escrow-sqlite`) or PostgreSQL (`escrow-postgres`, selected by `DATABASE_URL`). Both have versioned migrations and pass the same store contract tests.
 - **Frontend:** Next.js, TypeScript, Tailwind, Zod.
 - **Modules:** web client, API layer, escrow core (state machine, idempotency), Lightning adapter, persistence, deadline scheduler.
 
@@ -79,7 +79,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/api/v1/escrows` | Create an escrow offer |
+| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id` optional: omit it for an open offer) |
 | GET | `/api/v1/escrows/:id` | Details and state |
 | POST | `/api/v1/escrows/:id/accept` | Buyer accepts and submits `H` |
 | GET | `/api/v1/escrows/:id/invoice` | Hold invoice to pay |
@@ -87,6 +87,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 | POST | `/api/v1/escrows/:id/cancel` | Request cancellation |
 | POST | `/api/v1/escrows/:id/dispute` | Flag a dispute |
 | GET | `/api/v1/escrows/:id/events` | Audit and event history |
+| GET | `/api/v1/me` | The caller's `{id, role}` |
 | GET | `/health` | Health, including node connectivity and `server_time` |
 
 ## Milestones
@@ -126,7 +127,7 @@ docker compose -f regtest/docker-compose.yml down        # stop, keep state
 docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the network
 ```
 
-`admin.macaroon` is for local Phase 1 work only; the real service should use restricted macaroons.
+`admin.macaroon` is for local Phase 1 work only. `setup.sh` also bakes `toshi.macaroon` for the seller node, limited to `invoices:read`, `invoices:write` and `info:read`; `toshi-server` and the seller adapter in the tests use it.
 
 ## Status
 
@@ -140,7 +141,11 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] CORS, `GET /api/v1/escrows` (own escrows), Next.js scaffold in `web/`
 - [x] Phase 4 frontend (`web/`): account, new escrow, escrow page by role and state with release QR hand-over, operator queue; 44 unit tests; both demo paths pass end to end in the browser (Playwright, `npm run e2e`)
 - [x] `server_time` on `/health` for client clock-skew correction
-- [ ] Hardening: withdraw/expire `CREATED` offers, `GET /api/v1/me`, restricted macaroon, restart test on real node
+- [x] Hardening 1: `CREATED` offers can be withdrawn (seller, operator) or declined (buyer) and lapse at their deadline; `GET /api/v1/me`
+- [x] Hardening 2: restricted invoice-only macaroon (`regtest/creds/seller/toshi.macaroon`, now the server default), restart test on the real node
+- [x] Hardening 3: SQLite schema migrations (`PRAGMA user_version`), open-offer links (no buyer id needed; the first user to accept becomes the buyer)
+- [x] Extras: WebLN one-click payment, camera scan of the release QR, PostgreSQL store (`DATABASE_URL`)
+- [ ] Demo rehearsal and choosing the lead use case
 
 ## Open questions
 
@@ -154,7 +159,11 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 ```bash
 cargo test --workspace                                    # fast, no network needed
 ./regtest/setup.sh                                        # once, to start the regtest network
-cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests, about a minute
+cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests (4), about a minute
+
+docker compose -f regtest/docker-compose.yml --profile postgres up -d postgres
+cargo test -p escrow-postgres -- --ignored --test-threads=1   # store contract + race on a real PostgreSQL (wipes it)
+DATABASE_URL=postgres://toshi:toshi@127.0.0.1:55432/toshi cargo run -p escrow-api --bin toshi-server   # run on PostgreSQL
 cargo run -p phase1 -- both                               # the original hold-invoice demo
 
 export OPERATOR_TOKEN=$(openssl rand -hex 16)             # 24+ characters

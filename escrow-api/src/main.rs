@@ -2,7 +2,8 @@
 //!
 //! Configuration is by environment variable:
 //!   OPERATOR_TOKEN   required, token for the operator account
-//!   DATABASE_PATH    SQLite file (default ./toshi.db)
+//!   DATABASE_URL     postgres://user:pass@host/db to use PostgreSQL (takes precedence)
+//!   DATABASE_PATH    SQLite file when DATABASE_URL is not set (default ./toshi.db)
 //!   BIND             listen address (default 127.0.0.1:3000)
 //!   LND_ADDR         default https://localhost:10003
 //!   LND_TLS_CERT     path to tls.cert
@@ -13,8 +14,13 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use escrow_api::{ensure_operator, router, ApiConfig, AppState};
-use escrow_core::{service::EscrowService, timing::TimingConfig};
+use escrow_core::{
+    service::EscrowService,
+    store::{Store, UserStore},
+    timing::TimingConfig,
+};
 use escrow_lnd::{runner, LndAdapter};
+use escrow_postgres::PostgresStore;
 use escrow_sqlite::SqliteStore;
 
 fn env(name: &str, default: Option<&str>) -> String {
@@ -45,15 +51,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let bind: SocketAddr = env("BIND", Some("127.0.0.1:3000")).parse()?;
 
-    let store = Arc::new(SqliteStore::open(&env("DATABASE_PATH", Some("toshi.db"))).await?);
     let lnd = LndAdapter::connect(
         &env("LND_ADDR", Some("https://localhost:10003")),
         env("LND_TLS_CERT", Some("regtest/creds/seller/tls.cert")),
-        env("LND_MACAROON", Some("regtest/creds/seller/admin.macaroon")),
+        env("LND_MACAROON", Some("regtest/creds/seller/toshi.macaroon")),
         Duration::from_secs(10),
     )
     .await?;
 
+    // PostgreSQL when DATABASE_URL is set, otherwise a SQLite file. Both pass the same store contract.
+    match std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()) {
+        Some(url) => {
+            tracing::info!("using PostgreSQL");
+            run(Arc::new(PostgresStore::connect(&url).await?), lnd, operator_token, bind).await
+        }
+        None => {
+            let path = env("DATABASE_PATH", Some("toshi.db"));
+            tracing::info!(%path, "using SQLite");
+            run(Arc::new(SqliteStore::open(&path).await?), lnd, operator_token, bind).await
+        }
+    }
+}
+
+async fn run<S>(
+    store: S,
+    lnd: LndAdapter,
+    operator_token: String,
+    bind: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: Store + UserStore + Clone + 'static,
+{
     let service = Arc::new(EscrowService::new(lnd.clone(), store.clone(), TimingConfig::default()));
     ensure_operator(&store, &operator_token, runner::unix_now()).await.map_err(|e| e.message)?;
 

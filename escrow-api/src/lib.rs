@@ -163,6 +163,7 @@ where
     Router::new()
         .route("/health", get(routes::health::<A, S>))
         .route("/api/v1/users", post(routes::register::<A, S>))
+        .route("/api/v1/me", get(routes::me))
         .route("/api/v1/escrows", post(routes::create_escrow::<A, S>).get(routes::list_mine::<A, S>))
         .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
         .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))

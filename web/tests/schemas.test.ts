@@ -63,11 +63,20 @@ describe("NewEscrowForm", () => {
     });
   });
 
+  it("treats a blank buyer as an open offer and leaves the field out", () => {
+    const parsed = NewEscrowForm.safeParse({ ...form, buyer_id: "  " });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && "buyer_id" in parsed.data && parsed.data.buyer_id).toBeFalsy();
+  });
+
+  it("accepts an open offer from the API", () => {
+    expect(Escrow.safeParse({ ...sample, buyer_id: null }).success).toBe(true);
+  });
+
   it.each([
     ["a zero amount", { amount_sats: "0" }],
     ["too many sats", { amount_sats: "1000001" }],
     ["fractional sats", { amount_sats: "1.5" }],
-    ["no buyer", { buyer_id: "  " }],
     ["a hold under a minute", { hold_amount: "0.5", hold_unit: "minutes" }],
     ["a hold over six hours", { hold_amount: "7", hold_unit: "hours" }],
     ["a long description", { description: "x".repeat(501) }],

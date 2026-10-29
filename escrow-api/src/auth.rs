@@ -6,6 +6,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use escrow_core::{
     adapter::LightningAdapter,
     model::{Escrow, Role, User},
+    state::EscrowState,
     store::{Store, UserStore},
 };
 use rand::RngCore;
@@ -47,9 +48,17 @@ impl Party {
     }
 }
 
+/// An open offer (no buyer yet) can be viewed and accepted by any other user who has its link.
+pub fn is_prospective_buyer(escrow: &Escrow, user: &User) -> bool {
+    escrow.buyer_id.is_none()
+        && escrow.state == EscrowState::Created
+        && user.role == Role::User
+        && user.id != escrow.seller_id
+}
+
 /// `None` means the user has no standing on this escrow and must not learn that it exists.
 pub fn party_of(escrow: &Escrow, user: &User) -> Option<Party> {
-    if user.id == escrow.buyer_id {
+    if escrow.buyer_id.as_deref() == Some(user.id.as_str()) {
         Some(Party::Buyer)
     } else if user.id == escrow.seller_id {
         Some(Party::Seller)
@@ -96,7 +105,7 @@ mod tests {
     fn escrow() -> Escrow {
         Escrow {
             id: "e".into(),
-            buyer_id: "b".into(),
+            buyer_id: Some("b".into()),
             seller_id: "s".into(),
             amount_sats: 1,
             description: String::new(),
@@ -121,6 +130,18 @@ mod tests {
         assert_eq!(party_of(&e, &user("s", Role::User)), Some(Party::Seller));
         assert_eq!(party_of(&e, &user("op", Role::Operator)), Some(Party::Operator));
         assert_eq!(party_of(&e, &user("x", Role::User)), None);
+    }
+
+    #[test]
+    fn open_offers_can_be_seen_by_other_users_but_are_nobodys_until_accepted() {
+        let mut e = escrow();
+        e.buyer_id = None;
+        assert_eq!(party_of(&e, &user("x", Role::User)), None, "no standing until they accept");
+        assert!(is_prospective_buyer(&e, &user("x", Role::User)));
+        assert!(!is_prospective_buyer(&e, &user("s", Role::User)), "the seller is not a prospect");
+        assert!(!is_prospective_buyer(&e, &user("op", Role::Operator)));
+        e.state = EscrowState::InvoiceIssued;
+        assert!(!is_prospective_buyer(&e, &user("x", Role::User)), "only while still CREATED");
     }
 
     #[test]
