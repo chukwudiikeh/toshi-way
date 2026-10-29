@@ -6,6 +6,9 @@
 #   ./scripts/demo-env.sh status    what is running, and each node's spendable balance
 #   ./scripts/demo-env.sh down      stop the server, wallet and web app (the Lightning network keeps running)
 #   ./scripts/demo-env.sh reset     down, then forget the demo database and cast so the next `up` starts clean
+#   ./scripts/demo-env.sh sample    add a realistic mix of escrows for the cast, so a dashboard has something to show
+#   ./scripts/demo-env.sh repair    wipe the Lightning network and the demo state, for when Docker comes back broken
+#                                   after a restart ("RWLayer ... is unexpectedly nil"); then run `up` again
 #
 # Local regtest only. State lives in .demo/ (gitignored): the operator token, the key that encrypts
 # sellers' node credentials, the database, logs, pids, and the seeded accounts with their tokens.
@@ -94,6 +97,22 @@ start_lightning() {
   mine_one   # always leave a fresh block so LND reports it is synced
 }
 
+# Lightning nodes learn each other's channels by gossip, which takes a few seconds after the network
+# is built. Until the buyer can find a route to a seller, a payment fails, so wait for that before
+# reporting that everything is up.
+wait_for_routes() {
+  say "waiting for the buyer to learn the routes to both sellers"
+  local node dest
+  for node in seller seller2; do
+    dest=$($DC exec -T "$node" lncli --network=regtest getinfo | python3 -c 'import sys,json; print(json.load(sys.stdin)["identity_pubkey"])')
+    for _ in $(seq 1 45); do
+      $DC exec -T buyer lncli --network=regtest queryroutes --dest "$dest" --amt 1000 >/dev/null 2>&1 && continue 2
+      sleep 2
+    done
+    warn "the buyer cannot find a route to $node yet; a payment right now may fail (try again in a minute)"
+  done
+}
+
 start_server() {
   say "toshi-server on $API"
   if up_http "$API/health"; then say "already running"; return; fi
@@ -175,6 +194,7 @@ case "$cmd" in
     preflight
     load_secrets
     start_lightning
+    wait_for_routes
     export OPERATOR_TOKEN NODE_CREDENTIAL_KEY
     start_server
     start_wallet
@@ -208,8 +228,19 @@ case "$cmd" in
     rm -f "$DEMO/toshi.db" "$DEMO/toshi.db-shm" "$DEMO/toshi.db-wal" "$DEMO/accounts.json" "$DEMO/arbiter-key.json"
     say "forgot the demo database and cast; run '$0 up' for a clean start"
     ;;
+  sample)
+    wait_for_routes
+    node scripts/seed-escrows.mjs
+    ;;
+  repair)
+    "$0" down
+    say "wiping the Lightning network (regtest only: nothing real is lost) and the demo state"
+    $DC --profile postgres down -v 2>&1 | tail -2
+    rm -rf "$DEMO/toshi.db" "$DEMO/toshi.db-shm" "$DEMO/toshi.db-wal" "$DEMO/accounts.json" "$DEMO/arbiter-key.json"
+    say "done; run '$0 up' for a clean start"
+    ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
