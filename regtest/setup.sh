@@ -101,6 +101,17 @@ for n in seller seller2; do
   chmod 644 "$CREDS/$n/toshi.macaroon"
 done
 
+# Paying out needs payments as well: the shared node (seller) pays sellers their balance, and the
+# demo ramp provider plays its Lightning funds on the buyer node. Neither gets more than that.
+# bakemacaroon prints the macaroon as hex when it is not told where to save it.
+echo "==> baking payout macaroons (seller for withdrawals, buyer for the demo ramp)"
+for n in seller buyer; do
+  lncli "$n" bakemacaroon offchain:read offchain:write invoices:read invoices:write info:read \
+    | tr -d '[:space:]' | python3 -c 'import sys; sys.stdout.buffer.write(bytes.fromhex(sys.stdin.read()))' \
+    > "$CREDS/$n/payout.macaroon"
+  chmod 644 "$CREDS/$n/payout.macaroon"
+done
+
 echo "==> done"
 for n in "${NODES[@]}"; do
   echo "  $n  $(pubkey "$n")  channels=$(lncli "$n" getinfo | jget "['num_active_channels']")"

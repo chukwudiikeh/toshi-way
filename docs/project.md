@@ -39,7 +39,7 @@ The service runs the node and holds `P`, settling or cancelling based on a verif
 
 ## Non-goals (MVP)
 
-Custody beyond what the node holds in flight, fiat on/off-ramps or conversion (a display-only fiat value is built, see below), custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
+Custody beyond what the node holds in flight and the shared node's balances (see below), a real naira payment provider (the ramp is built against an interface with a labelled demo provider, see below), custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
 
 ## Escrow state machine
 
@@ -79,6 +79,26 @@ Each escrow records which node holds its invoice (`seller_node` in the API):
 - **`shared`** (custodial after release). The service's own node, used for sellers who have none when `SHARED_NODE` is on (the default). The operator receives the sats and owes them to the seller. The UI says so. Set `SHARED_NODE=off` so every seller must bring their own and the service can never receive anyone's money.
 
 The kind is fixed when the escrow is created, so changing node settings cannot strand an invoice. A seller cannot change or remove their node while an escrow with an invoice is in flight on it.
+
+## Balances and withdrawals
+
+A seller paid on the **shared** node has a balance: the operator received those sats and owes them. It is never stored, only derived: settled shared-node escrows where the person is the seller, minus their withdrawals. A seller with their own node was paid straight to it and has nothing held here (the Balance page says so, and still shows anything from before they connected it).
+
+- **Withdraw any time, to any Lightning wallet.** The seller pastes an invoice from their wallet (`POST /api/v1/me/withdrawals {invoice}`); the invoice sets the amount. The shared node pays it with a routing-fee limit of 1% (at least 10 sats). While a payment is in flight its amount plus that limit is held; once it succeeds only the fee it actually cost is kept, and a failed one gives everything back.
+- **No double spending.** The balance check and the withdrawal record are one atomic step (a single conditional insert on SQLite, an advisory lock per user on Postgres), and an invoice can be used once. Tested with ten withdrawals racing at once on all three stores.
+- **Only the node decides how a payment ended.** A background loop asks the node about every pending withdrawal; one the node has no record of after a minute is treated as failed. Paying needs a second macaroon on the shared node (`PAYOUT_MACAROON`: `offchain:read offchain:write invoices:read invoices:write info:read`); without it there are no withdrawals and the balance is read-only.
+- `GET /api/v1/me/balance` gives `available_sats`, `earned_sats`, `held_sats` and `withdrawn_sats`; `GET /api/v1/me/withdrawals[/{id}]` lists them.
+
+## Paying and getting paid in naira
+
+For people without a Lightning wallet, a payment provider sits between Nigerian bank transfers and Lightning. The escrow itself is unchanged: it is still a hold invoice in sats, and the provider simply pays or receives it.
+
+- **On-ramp (buyer pays in naira).** After accepting an offer, the buyer picks their bank and account number (the holder's name is looked up so they can check it) and gets transfer details: an account, the exact amount and a reference, valid until shortly before the invoice expires. When the transfer arrives the provider pays the escrow's invoice, and the escrow locks as usual. If the seller isn't paid in the end (refund, expiry, cancellation), the full naira amount goes back to the buyer's own account. If no transfer arrives in time, nothing happens.
+- **Naira or sats, both ways.** A seller can price an escrow in naira: the app converts it to sats at the current rate (shown before creating) and records the naira as the escrow's fiat value; the escrow itself is in sats, fixed from then on. A buyer whose escrow is waiting for payment picks "Pay in sats" (the Lightning invoice) or "Pay in naira" (bank transfer), each showing its amount, whatever the escrow was priced in.
+- **Off-ramp (seller withdraws to a bank).** From the Balance page: a bank, an account number and an amount in sats. The shared node pays the provider's invoice out of the seller's balance (a normal withdrawal, with the same rules), then the provider transfers naira to the account.
+- **Price.** The server's rate source (`FIAT_PROVIDER`) prices NGN; the provider fee (`RAMP_FEE_BPS`, default 1.5%) is added to what a buyer pays and taken from what a seller receives, and every order stores its rate, amount and fee. Smallest conversion 1,000 sats.
+- **Provider.** `RampProvider` is a trait: banks, account-name lookup, deposit details, paying and receiving Lightning, and sending naira. `RAMP_PROVIDER=demo` is the only one built: its Lightning side is real (a regtest node), its bank side is pretend ("Demo Bank (no real money)"; the buyer presses "I've sent the transfer"), and every screen says so. A real provider is a new implementation of the trait plus a webhook for incoming transfers.
+- Endpoints: `GET /api/v1/ramp` (terms and banks), `POST /api/v1/ramp/resolve`, `POST /api/v1/ramp/quote`, `POST|GET /api/v1/escrows/{id}/onramp`, `POST /api/v1/ramp/offramp`, `GET /api/v1/ramp/orders[/{id}]`, and for the demo only `POST /api/v1/ramp/orders/{id}/demo-deposit` (the buyer) and `POST /api/v1/operator/escrows/{id}/demo-onramp` (the operator, on the buyer's behalf). `scripts/pay-naira.sh <invoice>` uses the latter to fund an escrow in naira from its invoice, as the demo wallet does in sats.
 
 ## Fiat display
 

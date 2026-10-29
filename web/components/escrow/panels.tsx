@@ -11,6 +11,7 @@ import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } 
 import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
 import { useStoredSecret } from "./hooks";
+import { NairaPay, PayChoice } from "./NairaPay";
 import { Scanner } from "./Scanner";
 
 type PanelProps = {
@@ -216,7 +217,7 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
       return (
         <div className="space-y-4">
           <SecretHealth stored={stored} />
-          <InvoiceBox escrow={escrow} />
+          <PayChoice escrow={escrow} sats={<InvoiceBox escrow={escrow} />} />
           <p className="flex items-center gap-2 text-sm text-neutral-500">
             <span className="size-2 animate-pulse rounded-full bg-sky-500" />
             After you pay, this page updates by itself once the Lightning node confirms the funds are locked.
@@ -237,6 +238,7 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
       return (
         <div className="space-y-4">
           <Deadline escrow={escrow} />
+          <NairaPay escrow={escrow} canStart={false} />
           {linkSecret ? (
             <ReleaseForm escrow={escrow} actions={actions} initial={linkSecret} fromLink />
           ) : stored.status === "ok" ? (
@@ -257,7 +259,12 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
         </div>
       );
     default:
-      return <FinalSummary escrow={escrow} />;
+      return (
+        <div className="space-y-4">
+          <FinalSummary escrow={escrow} />
+          <NairaPay escrow={escrow} canStart={false} />
+        </div>
+      );
   }
 }
 

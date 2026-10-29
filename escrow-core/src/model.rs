@@ -321,3 +321,248 @@ pub struct InvoiceEvent {
     pub payment_hash: PaymentHash,
     pub state: NodeInvoiceState,
 }
+
+/// Where a withdrawal sends the sats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawalKind {
+    /// To a Lightning invoice the seller supplied: their own wallet.
+    Lightning,
+    /// To the ramp provider's invoice, which pays naira into the seller's bank account in return.
+    Bank,
+}
+
+impl WithdrawalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lightning => "lightning",
+            Self::Bank => "bank",
+        }
+    }
+}
+
+impl std::str::FromStr for WithdrawalKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "lightning" => Ok(Self::Lightning),
+            "bank" => Ok(Self::Bank),
+            other => Err(format!("unknown withdrawal kind '{other}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawalState {
+    /// The node is paying it. The amount and the most the fee can be are held back from the balance.
+    Pending,
+    Succeeded,
+    /// Nothing left the node; the amount is back in the balance.
+    Failed,
+}
+
+impl WithdrawalState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for WithdrawalState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unknown withdrawal state '{other}'")),
+        }
+    }
+}
+
+/// A payout from the shared node of sats the operator owes a seller. Whether it went through is
+/// what the node reports about the payment, never what anyone claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Withdrawal {
+    pub id: String,
+    pub user_id: String,
+    pub kind: WithdrawalKind,
+    pub amount_sats: u64,
+    /// The most the routing fee may come to. Held back from the balance while the payment is pending.
+    pub fee_limit_sats: u64,
+    /// The routing fee actually paid, once the payment succeeded.
+    pub fee_sats: Option<u64>,
+    /// The BOLT11 invoice being paid.
+    pub invoice: String,
+    pub payment_hash: PaymentHash,
+    pub state: WithdrawalState,
+    /// Why it failed, in the node's words.
+    pub failure: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl Withdrawal {
+    /// What it takes out of the balance in its current state.
+    pub fn debit(&self) -> u64 {
+        match self.state {
+            WithdrawalState::Pending => self.amount_sats + self.fee_limit_sats,
+            WithdrawalState::Succeeded => self.amount_sats + self.fee_sats.unwrap_or(0),
+            WithdrawalState::Failed => 0,
+        }
+    }
+}
+
+/// A bank account in the ramp's currency: where a seller's payout or a buyer's refund goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BankAccount {
+    /// The bank's code in the national payment system (CBN/NIBSS codes for Nigeria).
+    pub bank_code: String,
+    pub bank_name: String,
+    /// The 10-digit NUBAN.
+    pub account_number: String,
+    /// The holder's name as the bank reports it.
+    pub account_name: String,
+}
+
+/// Where a buyer sends money for an on-ramp: a bank transfer to the provider, with a reference that
+/// ties the transfer to the order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositInstructions {
+    pub bank_name: String,
+    pub account_number: String,
+    pub account_name: String,
+    pub reference: String,
+    /// The transfer must arrive before this, so the escrow's invoice can still be paid.
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RampDirection {
+    /// A buyer pays an escrow in local currency; the provider pays the Lightning invoice.
+    On,
+    /// A seller sends sats from their balance to the provider, who pays local currency to their bank.
+    Off,
+}
+
+impl RampDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "onramp",
+            Self::Off => "offramp",
+        }
+    }
+}
+
+impl std::str::FromStr for RampDirection {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "onramp" => Ok(Self::On),
+            "offramp" => Ok(Self::Off),
+            other => Err(format!("unknown ramp direction '{other}'")),
+        }
+    }
+}
+
+/// Where a ramp order has got to. On-ramp orders go AwaitingDeposit -> DepositReceived -> Paying ->
+/// Funded -> Complete, or end in Expired, or (once money arrived but the escrow did not pay the
+/// seller) Refunding -> Refunded. Off-ramp orders go SendingSats -> PayingOut -> PaidOut, or Failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RampState {
+    AwaitingDeposit,
+    DepositReceived,
+    Paying,
+    Funded,
+    Complete,
+    Refunding,
+    Refunded,
+    Expired,
+    SendingSats,
+    PayingOut,
+    PaidOut,
+    Failed,
+}
+
+impl RampState {
+    pub const ALL: [RampState; 12] = [
+        Self::AwaitingDeposit,
+        Self::DepositReceived,
+        Self::Paying,
+        Self::Funded,
+        Self::Complete,
+        Self::Refunding,
+        Self::Refunded,
+        Self::Expired,
+        Self::SendingSats,
+        Self::PayingOut,
+        Self::PaidOut,
+        Self::Failed,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingDeposit => "awaiting_deposit",
+            Self::DepositReceived => "deposit_received",
+            Self::Paying => "paying",
+            Self::Funded => "funded",
+            Self::Complete => "complete",
+            Self::Refunding => "refunding",
+            Self::Refunded => "refunded",
+            Self::Expired => "expired",
+            Self::SendingSats => "sending_sats",
+            Self::PayingOut => "paying_out",
+            Self::PaidOut => "paid_out",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Refunded | Self::Expired | Self::PaidOut | Self::Failed)
+    }
+}
+
+impl std::str::FromStr for RampState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL.into_iter().find(|x| x.as_str() == s).ok_or_else(|| format!("unknown ramp state '{s}'"))
+    }
+}
+
+/// One conversion between local currency and sats, through the ramp provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RampOrder {
+    pub id: String,
+    pub user_id: String,
+    pub direction: RampDirection,
+    /// The escrow an on-ramp pays for.
+    pub escrow_id: Option<String>,
+    /// The withdrawal that sends an off-ramp's sats to the provider.
+    pub withdrawal_id: Option<String>,
+    pub amount_sats: u64,
+    /// ISO 4217 code, upper case.
+    pub currency: String,
+    /// What the person pays (on-ramp, fee included) or receives (off-ramp, fee taken), in minor units.
+    pub fiat_minor: i64,
+    /// The provider's fee, in minor units, already counted in `fiat_minor`.
+    pub fee_minor: i64,
+    pub rate_minor_per_btc: i64,
+    /// Where a payout (off-ramp) or a refund (on-ramp) is sent.
+    pub bank: BankAccount,
+    /// Where the buyer sends money, for an on-ramp.
+    pub deposit: Option<DepositInstructions>,
+    pub provider: String,
+    /// The provider's reference for the money it sent out (payout or refund).
+    pub fiat_reference: Option<String>,
+    pub state: RampState,
+    /// The latest thing worth telling the person, such as why a payout is being retried.
+    pub note: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

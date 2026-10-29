@@ -145,3 +145,76 @@ async fn a_duplicate_payment_hash_is_a_conflict() {
     svc.accept(&a.id, h, "buyer", T0).await.unwrap();
     assert!(svc.accept(&b.id, h, "buyer", T0).await.is_err());
 }
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL"]
+async fn postgres_store_meets_the_payout_store_contract() {
+    escrow_core::testing::payout_store_contract(&fresh().await).await;
+}
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL"]
+async fn concurrent_withdrawals_cannot_spend_the_same_sats_twice() {
+    use escrow_core::{
+        model::{NodeKind, Withdrawal, WithdrawalKind, WithdrawalState},
+        store::PayoutStore,
+    };
+    let store = Arc::new(fresh().await);
+    store
+        .insert(Escrow {
+            id: "earned".into(),
+            buyer_id: Some("buyer".into()),
+            seller_id: "seller".into(),
+            arbiter_id: None,
+            arbiter_key: None,
+            arbiter_sealed: None,
+            arbiter_confirmed_at: None,
+            node: NodeKind::Shared,
+            amount_sats: 5_000,
+            fiat: None,
+            reference: None,
+            return_url: None,
+            description: "race".into(),
+            payment_hash: None,
+            invoice: None,
+            invoice_expires_at: None,
+            state: EscrowState::Settled,
+            deadline_at: T0 + 3600,
+            created_at: T0,
+            updated_at: T0,
+        })
+        .await
+        .unwrap();
+
+    // Ten withdrawals of 1,000 (+10 fee allowance) at once against 5,000: exactly four fit.
+    let tasks: Vec<_> = (0..10u8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .insert_withdrawal(Withdrawal {
+                        id: format!("w{i}"),
+                        user_id: "seller".into(),
+                        kind: WithdrawalKind::Lightning,
+                        amount_sats: 1_000,
+                        fee_limit_sats: 10,
+                        fee_sats: None,
+                        invoice: format!("lnbcrt{i}"),
+                        payment_hash: [i; 32],
+                        state: WithdrawalState::Pending,
+                        failure: None,
+                        created_at: T0,
+                        updated_at: T0,
+                    })
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut accepted = 0;
+    for t in tasks {
+        accepted += usize::from(t.await.unwrap());
+    }
+    assert_eq!(accepted, 4);
+    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 5_000 - 4 * 1_010);
+}

@@ -46,3 +46,18 @@ export function DemoWallet() {
     </div>
   );
 }
+
+/** Whether the demo wallet is wired in, so screens can offer to make an invoice with it. */
+export const hasDemoWallet = Boolean(URL_BASE);
+
+/** Demo only: an invoice on the regtest buyer node, somewhere for a withdrawal to go. */
+export async function demoInvoice(amountSats: number): Promise<string> {
+  const res = await fetch(`${URL_BASE}/invoice`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ amount_sats: amountSats }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { payment_request?: string; error?: string };
+  if (!res.ok || !body.payment_request) throw new Error(body.error ?? "The demo wallet couldn't make an invoice.");
+  return body.payment_request;
+}
