@@ -134,7 +134,9 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Regtest network: 3 LND nodes, channels open, routed payment verified, `addholdinvoice` verified
 - [x] Phase 1 Rust program (`phase1/`): hold invoice → pay → accepted → settle / cancel, both verified
 - [x] Timeout path: with no action LND auto-cancels 12 blocks before HTLC expiry and the buyer is refunded in full (see `flow.md` section 7)
-- [ ] Escrow core, API, frontend, hardening
+- [x] Escrow core (`escrow-core/`): state machine, timing, `LightningAdapter` + mock, `Store` + in-memory store, service logic; 27 tests passing
+- [ ] Phase 2 part 2: real LND adapter, SQL store, event/scheduler loop
+- [ ] API, frontend, hardening
 
 ## Open questions
 
