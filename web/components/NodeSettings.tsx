@@ -8,7 +8,16 @@ import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
 import { KeyIcon } from "./landing/icons";
 import { PageHeader, Step, StatusPanel } from "./PageParts";
-import { Button, Card, ConfirmButton, CopyField, Field, inputClass, Notice, Spinner } from "./ui";
+import {
+  Button,
+  Card,
+  ConfirmButton,
+  CopyField,
+  Field,
+  inputClass,
+  Notice,
+  Spinner,
+} from "./ui";
 
 /** Where a seller connects their own Lightning node, so a release pays them directly. */
 export function NodeSettings() {
@@ -29,22 +38,30 @@ export function NodeSettings() {
   }, [session]);
 
   if (session === undefined) return <Spinner />;
-  if (!session) return <SignIn note="Sign in to connect your Lightning node." />;
+  if (!session)
+    return <SignIn note="Sign in to connect your Lightning node." />;
   if (session.kind === "operator") {
-    return <Notice tone="info">Operators don&apos;t have a seller node.</Notice>;
+    return (
+      <Notice tone="info">Operators don&apos;t have a seller node.</Notice>
+    );
   }
   if (error) return <Notice tone="error">{error}</Notice>;
   if (!info) return <Spinner />;
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={<KeyIcon className="size-5" />} title="Your Lightning node">
-        When a buyer releases an escrow, the sats arrive on the node that issued the invoice. Connect your own so
-        they land in your balance directly and nobody else ever holds them.
+      <PageHeader
+        icon={<KeyIcon className="size-5" />}
+        title="Your Lightning node"
+      >
+        Connect your own node so released payments land with you directly and
+        nobody else holds your sats.
       </PageHeader>
       <Status info={info} />
       {!info.own_nodes_enabled ? (
-        <Notice tone="warn">This server isn&apos;t set up to take sellers&apos; own nodes.</Notice>
+        <Notice tone="warn">
+          This server isn&apos;t set up to take sellers&apos; own nodes.
+        </Notice>
       ) : (
         <ConnectForm info={info} onChange={setInfo} />
       )}
@@ -57,12 +74,15 @@ function Status({ info }: { info: NodeInfo }) {
     return (
       <StatusPanel tone="good" label="Connected">
         <p>
-          <strong>Your node is connected.</strong> New escrows are issued on it, and a release pays you directly.
+          <strong>Your node is connected.</strong> New escrows are issued on it,
+          and a release pays you directly.
         </p>
         {info.address && (
           <p className="break-all font-mono text-xs text-neutral-600 dark:text-neutral-400">
             {info.address}
-            {info.connected_at ? ` · connected ${formatLocalTime(info.connected_at)}` : ""}
+            {info.connected_at
+              ? ` · connected ${formatLocalTime(info.connected_at)}`
+              : ""}
           </p>
         )}
       </StatusPanel>
@@ -72,9 +92,8 @@ function Status({ info }: { info: NodeInfo }) {
     return (
       <StatusPanel tone="warn" label="Shared node">
         <p>
-          <strong>No node connected.</strong> Your escrows use this service&apos;s shared node. That means the service
-          receives the sats when a buyer releases, and owes them to you: you are trusting the operator with your
-          money. Connect your own node to be paid directly.
+          <strong>No node connected.</strong> Your escrows use the shared node,
+          so the service receives the sats on release and owes them to you.
         </p>
       </StatusPanel>
     );
@@ -82,16 +101,29 @@ function Status({ info }: { info: NodeInfo }) {
   return (
     <StatusPanel tone="idle" label="Not connected">
       <p>
-        <strong>No node connected.</strong> You need to connect a node before you can create an escrow, because this
-        service doesn&apos;t hold sellers&apos; money.
+        <strong>No node connected.</strong> You need to connect a node before
+        you can create an escrow, because this service doesn&apos;t hold
+        sellers&apos; money.
       </p>
     </StatusPanel>
   );
 }
 
-function ConnectForm({ info, onChange }: { info: NodeInfo; onChange: (n: NodeInfo) => void }) {
-  const [values, setValues] = useState({ address: "", tls_cert: "", macaroon: "" });
-  const [errors, setErrors] = useState<Partial<Record<keyof typeof values, string>>>({});
+function ConnectForm({
+  info,
+  onChange,
+}: {
+  info: NodeInfo;
+  onChange: (n: NodeInfo) => void;
+}) {
+  const [values, setValues] = useState({
+    address: "",
+    tls_cert: "",
+    macaroon: "",
+  });
+  const [errors, setErrors] = useState<
+    Partial<Record<keyof typeof values, string>>
+  >({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -140,36 +172,22 @@ function ConnectForm({ info, onChange }: { info: NodeInfo; onChange: (n: NodeInf
 
   const locked = !info.can_change;
   return (
-    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-      <Card title="What you need">
-        <ol className="space-y-5">
-          <Step n={1}>
-            Bake a macaroon that can <strong>only</strong> handle invoices (never share your admin macaroon):
-            <CopyField value="lncli bakemacaroon invoices:read invoices:write info:read --save_to=toshi.macaroon" />
-          </Step>
-          <Step n={2}>
-            Turn it into hex text and paste it into the form:
-            <CopyField value="xxd -p -c 1000 toshi.macaroon" />
-          </Step>
-          <Step n={3}>
-            Paste your node&apos;s TLS certificate (usually <code>~/.lnd/tls.cert</code>). We connect only to a server
-            presenting exactly this certificate.
-          </Step>
-          <Step n={4}>
-            Your node&apos;s gRPC address, as <code>https://host:10009</code>. It must be reachable from this
-            service and must support hold invoices (LND does).
-          </Step>
-        </ol>
-      </Card>
-
-      <Card title={info.mode === "own" ? "Replace your node" : "Connect your node"}>
+    <div className="mx-auto w-full max-w-2xl space-y-6">
+      <Card
+        title={info.mode === "own" ? "Replace your node" : "Connect your node"}
+      >
         <form onSubmit={submit} className="space-y-4" noValidate>
           {locked && (
             <Notice tone="warn">
-              You have escrows in progress on your node. You can change it again once they have finished.
+              You have escrows in progress on your node. You can change it again
+              once they have finished.
             </Notice>
           )}
-          <Field label="Node address" error={errors.address}>
+          <Field
+            label="Node address"
+            hint="Your node's gRPC address. It must be reachable from this service and support hold invoices."
+            error={errors.address}
+          >
             <input
               value={values.address}
               onChange={(e) => set("address", e.target.value)}
@@ -180,12 +198,16 @@ function ConnectForm({ info, onChange }: { info: NodeInfo; onChange: (n: NodeInf
               disabled={locked}
             />
           </Field>
-          <Field label="TLS certificate" error={errors.tls_cert}>
+          <Field
+            label="TLS certificate"
+            hint="Usually ~/.lnd/tls.cert. We only connect to a server presenting exactly this certificate."
+            error={errors.tls_cert}
+          >
             <textarea
               value={values.tls_cert}
               onChange={(e) => set("tls_cert", e.target.value)}
               className={`${inputClass} font-mono text-xs`}
-              rows={5}
+              rows={4}
               placeholder="-----BEGIN CERTIFICATE-----"
               spellCheck={false}
               disabled={locked}
@@ -225,11 +247,49 @@ function ConnectForm({ info, onChange }: { info: NodeInfo; onChange: (n: NodeInf
             )}
           </div>
           <p className="text-xs text-neutral-500">
-            Saving connects to your node, checks that it is synced, and makes and cancels a one-sat test invoice to
-            prove the macaroon works. Nothing is saved if any step fails.
+            Saving connects to your node, checks that it is synced, and makes
+            and cancels a one-sat test invoice to prove the macaroon works.
+            Nothing is saved if any step fails.
           </p>
         </form>
       </Card>
+      <details
+        open={info.mode !== "own"}
+        className="group rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900/60"
+      >
+        <summary className="flex cursor-pointer items-center justify-between px-5 py-4 font-semibold">
+          How to get these details
+          <span
+            className="text-neutral-400 transition-transform group-open:rotate-180"
+            aria-hidden
+          >
+            ▾
+          </span>
+        </summary>
+        <div className="border-t border-neutral-200 px-5 py-5 dark:border-neutral-800">
+          <ol className="space-y-5">
+            <Step n={1}>
+              Bake a macaroon that can <strong>only</strong> handle invoices
+              (never share your admin macaroon):
+              <CopyField value="lncli bakemacaroon invoices:read invoices:write info:read --save_to=toshi.macaroon" />
+            </Step>
+            <Step n={2}>
+              Turn it into hex text and paste it into the form:
+              <CopyField value="xxd -p -c 1000 toshi.macaroon" />
+            </Step>
+            <Step n={3}>
+              Paste your node&apos;s TLS certificate (usually{" "}
+              <code>~/.lnd/tls.cert</code>). We connect only to a server
+              presenting exactly this certificate.
+            </Step>
+            <Step n={4}>
+              Your node&apos;s gRPC address, as <code>https://host:10009</code>.
+              It must be reachable from this service and must support hold
+              invoices (LND does).
+            </Step>
+          </ol>
+        </div>
+      </details>
     </div>
   );
 }
