@@ -2,7 +2,7 @@
 //! [`store_contract`] with a fresh, empty store so MemoryStore, SQLite and Postgres stay interchangeable.
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, Role, User},
+    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, Role, Scope, User},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore},
 };
@@ -263,6 +263,41 @@ pub async fn user_store_contract(store: &dyn UserStore) {
     assert_eq!(store.insert_user(alice, "other".into()).await, Err(StoreError::Conflict));
     let bob = User { id: "bob".into(), role: Role::User, created_at: 12 };
     assert_eq!(store.insert_user(bob, "hash-a".into()).await, Err(StoreError::Conflict));
+
+    // API keys: found by hash, listed newest first per user, revoked once and only by their owner.
+    let key = |id: &str, user: &str, scopes: Vec<Scope>, at: i64| ApiKey {
+        id: id.into(),
+        user_id: user.into(),
+        name: format!("key {id}"),
+        last_chars: "ab12".into(),
+        scopes,
+        created_at: at,
+        last_used_at: None,
+        revoked_at: None,
+    };
+    let k1 = key("k1", "alice", vec![Scope::EscrowsRead], 60);
+    let k2 = key("k2", "alice", vec![Scope::EscrowsRead, Scope::EscrowsWrite], 70);
+    store.insert_api_key(k1.clone(), "kh-1".into()).await.unwrap();
+    store.insert_api_key(k2.clone(), "kh-2".into()).await.unwrap();
+    assert_eq!(store.insert_api_key(k1.clone(), "kh-3".into()).await, Err(StoreError::Conflict), "id is unique");
+    assert_eq!(
+        store.insert_api_key(key("k3", "alice", vec![], 80), "kh-2".into()).await,
+        Err(StoreError::Conflict),
+        "hash is unique"
+    );
+    assert_eq!(store.api_key_by_hash("kh-2").await.unwrap(), Some(k2.clone()));
+    assert_eq!(store.api_key_by_hash("missing").await.unwrap(), None);
+    assert!(k2.allows(Scope::EscrowsWrite) && !k1.allows(Scope::EscrowsWrite));
+    assert_eq!(store.list_api_keys("alice").await.unwrap(), vec![k2.clone(), k1.clone()]);
+    assert!(store.list_api_keys("root").await.unwrap().is_empty());
+    store.touch_api_key("k1", 90).await.unwrap();
+    assert_eq!(store.api_key_by_hash("kh-1").await.unwrap().unwrap().last_used_at, Some(90));
+    assert!(!store.revoke_api_key("root", "k1", 95).await.unwrap(), "not the owner's");
+    assert!(store.revoke_api_key("alice", "k1", 96).await.unwrap());
+    assert!(!store.revoke_api_key("alice", "k1", 97).await.unwrap(), "already revoked");
+    let revoked = store.api_key_by_hash("kh-1").await.unwrap().unwrap();
+    assert_eq!(revoked.revoked_at, Some(96), "the first revocation time stands");
+    assert!(!revoked.allows(Scope::EscrowsRead), "a revoked key allows nothing");
 
     // An arbiter's public key: registered, replaced as a whole, kept per user.
     assert_eq!(store.arbiter_key("alice").await.unwrap(), None);

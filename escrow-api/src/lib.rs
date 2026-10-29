@@ -17,7 +17,7 @@ use axum::{
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use escrow_core::{
@@ -191,6 +191,8 @@ where
             "/api/v1/me/node",
             get(routes::node_get::<A, S>).put(routes::node_put::<A, S>).delete(routes::node_delete::<A, S>),
         )
+        .route("/api/v1/me/api-keys", get(routes::api_key_list::<A, S>).post(routes::api_key_create::<A, S>))
+        .route("/api/v1/me/api-keys/{id}", delete(routes::api_key_revoke::<A, S>))
         .route("/api/v1/escrows", post(routes::create_escrow::<A, S>).get(routes::list_mine::<A, S>))
         .route("/api/v1/escrows/{id}", get(routes::get_escrow::<A, S>))
         .route("/api/v1/escrows/{id}/accept", post(routes::accept::<A, S>))

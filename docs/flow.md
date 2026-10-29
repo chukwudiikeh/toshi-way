@@ -624,6 +624,28 @@ Both came from a redesign by the project owner (PR #8: `web/components/Sidebar.t
 
 ---
 
+## 29. API keys for businesses (step 1 of the merchant integration)
+
+A business wants its own software to create escrows and check on them. Until now the only credential was the account token, which can do everything (change the node, the arbiter key, anything). A key is a narrower, revocable credential for software.
+
+**The plan.** Four steps, each its own PR: (1) scoped API keys, this section; (2) a checkout link carrying the business's order reference and a return address; (3) signed, retried webhooks on every state change; (4) API docs and a small JavaScript library. The customer is sent to our checkout page (redirect, not an embedded widget) because the buyer's release secret is made in the buyer's browser and must stay there. Test and live modes were left out: a key works on the server that made it, and that server's network is the mode.
+
+**What a key is.** `tk_` plus 256 random bits, shown once when it is made. Only its SHA-256 is stored (`api_keys` table: sqlite migration 006, Postgres 005), with a name, its last four characters (so people can tell keys apart), its scopes and its created, last-used and revoked times. It acts as the account that made it: an escrow made with it has that account as the seller.
+
+**Scopes.** `escrows:read` (list, read, events) and `escrows:write` (create as the seller, cancel). Nothing else exists to grant.
+
+**Closed by default.** The old `Auth` extractor now refuses a key outright (`403`), so every existing endpoint stayed closed to keys without being touched: the node, the arbiter key, key management itself, and everything a buyer or arbiter does (accept, release, dispute, the invoice, arbitration). Only five routes ask for the new `ApiAuth` and name a scope: create, list, get, events and cancel; plus `GET /me`, so software can check its key works (it also reports the key's scopes). An account token still passes everywhere, as before.
+
+**Managing keys** (account token only; a key cannot make or list keys): `POST /api/v1/me/api-keys` (`{name, scopes}`; the key is in this response only), `GET /api/v1/me/api-keys`, `DELETE /api/v1/me/api-keys/{id}`. Operators cannot make keys. A person may hold 20 working keys at once. A revoked key is simply unknown (`401`) from the next call. "Last used" is written at most once a minute per key, so a busy integration does not write on every request.
+
+**On the Account page** there is an API keys card: the list (name, last characters, scopes, made, last used, revoked), "Make a new key" with a name and the two scopes, a one-time copy box warning to keep the key on a server and never in a web page, and Revoke with a confirmation.
+
+**Security notes.** A key is as powerful as its scopes: a write key can make offers and cancel unaccepted ones as the seller, so it belongs in a server's settings, not in a browser or an app. Keys cannot reach money movement: release needs the buyer's secret, which keys never have. A key cannot see escrows it has no part in, apart from open offers, which anyone with the link can already read. Rate limits apply per key, as they do per token.
+
+**Verified.** Rust: a store contract test on memory, SQLite and Postgres (lookup, uniqueness, order, revoke by owner only, last used); nine HTTP tests (shown once and never listed with its secret, bad names and scopes, create and read, scope limits both ways, every other endpoint closed to keys, only its own account's escrows, revoke, last-used throttling, the 20-key limit). Browser: a business makes a key, calls the API with it from outside the page (201 and its escrow shows the shop as seller; 403 on the node and on key management), revokes it, and the next call is 401.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

@@ -191,6 +191,55 @@ pub struct User {
     pub created_at: i64,
 }
 
+/// What an API key is allowed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// List and read the account's escrows and their history.
+    EscrowsRead,
+    /// Create escrows as the seller, and cancel ones nobody has accepted.
+    EscrowsWrite,
+}
+
+impl Scope {
+    pub const ALL: [Scope; 2] = [Scope::EscrowsRead, Scope::EscrowsWrite];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EscrowsRead => "escrows:read",
+            Self::EscrowsWrite => "escrows:write",
+        }
+    }
+}
+
+impl std::str::FromStr for Scope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL.into_iter().find(|x| x.as_str() == s).ok_or_else(|| format!("unknown scope '{s}'"))
+    }
+}
+
+/// A revocable credential for a business's software. The key itself is shown once at creation;
+/// only its hash is stored, so what is kept here is enough to recognise it but not to use it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKey {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    /// The last few characters of the key, so a person can tell their keys apart.
+    pub last_chars: String,
+    pub scopes: Vec<Scope>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+impl ApiKey {
+    pub fn allows(&self, scope: Scope) -> bool {
+        self.revoked_at.is_none() && self.scopes.contains(&scope)
+    }
+}
+
 /// A node report about an escrow's invoice, kept for the audit trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeEventRecord {
