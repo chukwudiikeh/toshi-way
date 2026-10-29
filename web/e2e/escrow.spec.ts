@@ -64,10 +64,11 @@ async function createEscrow(
 ) {
   const { page } = seller;
   await page.goto("/escrows/new");
+  await page.getByLabel("Description").fill(description);
+  await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel("Buyer's user id").fill(buyerId);
   if (arbiterId) await page.getByLabel("Arbiter's user id").fill(arbiterId);
   await page.getByLabel("Amount (sats)").fill("1000");
-  await page.getByLabel("Description").fill(description);
   await page.getByLabel("Hold time amount").fill(hold[0]);
   await page.getByLabel("Hold time unit").selectOption(hold[1]);
   await page.getByRole("button", { name: "Create escrow" }).click();
@@ -193,8 +194,9 @@ test("open offer: a link anyone can open; a brand-new visitor becomes the buyer"
   const { page } = seller;
 
   await page.goto("/escrows/new");
-  await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByLabel("Description").fill("e2e open offer");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByLabel("Hold time amount").fill("30");
   await page.getByLabel("Hold time unit").selectOption("minutes");
   await page.getByRole("button", { name: "Create escrow" }).click(); // no buyer id
@@ -447,13 +449,14 @@ test("a fiat value is shown beside the sats, worked out once at creation, and ma
   const buyer = await newParty(browser);
   const { page } = seller;
   await page.goto("/escrows/new");
+  await page.getByLabel("Description").fill("e2e fiat value");
+  await page.getByRole("button", { name: "Continue" }).click();
   // Needs a server with FIAT_PROVIDER set (the demo environment has it); skip where fiat is off.
   await page.getByLabel("Amount (sats)").waitFor();
   test.skip((await page.getByLabel("Also show the value in").count()) === 0, "fiat values are not enabled on this server");
 
   await page.getByLabel("Buyer's user id").fill(buyer.id);
   await page.getByLabel("Amount (sats)").fill("5000");
-  await page.getByLabel("Description").fill("e2e fiat value");
   await page.getByLabel("Hold time amount").fill("30");
   await page.getByLabel("Hold time unit").selectOption("minutes");
   await page.getByLabel("Also show the value in").selectOption("NGN");
@@ -521,9 +524,8 @@ test("dashboard: shows whose move it is, what is locked, and lets you filter you
 
   // A new account has nothing yet, and is told how to start.
   await seller.page.goto("/");
-  await expect(seller.page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
+  await expect(seller.page.getByRole("heading", { level: 1, name: /^(Good (morning|afternoon|evening)|Working late)$/ })).toBeVisible();
   await expect(seller.page.getByText("You're all caught up.")).toBeVisible();
-  await expect(seller.page.getByRole("heading", { name: "Get started" })).toBeVisible();
   await expect(seller.page.getByText("No escrows yet.", { exact: true })).toBeVisible();
 
   // The seller makes an offer for the buyer. It is the buyer's move, not the seller's.
@@ -535,7 +537,6 @@ test("dashboard: shows whose move it is, what is locked, and lets you filter you
   await seller.page.goto("/");
   await expect(seller.page.getByText("You're all caught up.")).toBeVisible();
   await expect(seller.page.getByText("Waiting for the buyer to accept")).toBeVisible();
-  await expect(seller.page.getByRole("heading", { name: "Get started" })).toHaveCount(0);
 
   // The buyer accepts and pays: now the funds are locked, and both have a move to make.
   await seller.page.goto(`/escrows/${id}`); // the helper watches the seller's escrow page flip to locked
