@@ -11,6 +11,10 @@ fn escrow(id: &str) -> Escrow {
     Escrow {
         id: id.into(),
         buyer_id: Some("buyer".into()),
+        arbiter_id: None,
+        arbiter_key: None,
+        arbiter_sealed: None,
+        arbiter_confirmed_at: None,
         node: NodeKind::Shared,
         seller_id: "seller".into(),
         amount_sats: 1000,
@@ -50,6 +54,8 @@ pub async fn store_contract(store: &dyn Store) {
     // A transition applies its update and appends its audit entry together.
     let hash = [7u8; 32];
     let update = EscrowUpdate {
+        arbiter_sealed: None,
+        arbiter_confirmed_at: None,
         buyer_id: None,
         payment_hash: Some(hash),
         invoice: Some("lnbcrt1abc".into()),
@@ -116,6 +122,22 @@ pub async fn store_contract(store: &dyn Store) {
     assert_eq!(ids(store.list_for_user("someone-else").await.unwrap()), ["c"]);
     assert!(store.list_for_user("nobody").await.unwrap().is_empty());
 
+    // An arbitrated escrow keeps its arbiter, shows up in the arbiter's list, and accepts the sealed
+    // secret and the arbiter's confirmation as updates.
+    let mut arb = escrow("arb");
+    arb.arbiter_id = Some("judge".into());
+    arb.arbiter_key = Some("judge-key".into());
+    arb.created_at = 45;
+    store.insert(arb.clone()).await.unwrap();
+    assert_eq!(store.get("arb").await.unwrap(), Some(arb));
+    assert_eq!(ids(store.list_for_user("judge").await.unwrap()), ["arb"]);
+    let sealed = EscrowUpdate { arbiter_sealed: Some("sealed-blob".into()), ..Default::default() };
+    let e = store.transition("arb", Created, sealed, audit("arb", Created, InvoiceIssued, 46)).await.unwrap();
+    assert_eq!(e.arbiter_sealed.as_deref(), Some("sealed-blob"));
+    let confirm = EscrowUpdate { arbiter_confirmed_at: Some(47), ..Default::default() };
+    let e = store.transition("arb", InvoiceIssued, confirm, audit("arb", InvoiceIssued, InvoiceIssued, 47)).await.unwrap();
+    assert_eq!((e.state, e.arbiter_confirmed_at, e.arbiter_sealed.as_deref()), (InvoiceIssued, Some(47), Some("sealed-blob")));
+
     // An open offer has no buyer until someone accepts; the claim is applied with the transition
     // and an update without a buyer leaves it alone.
     let mut open = escrow("open");
@@ -170,6 +192,15 @@ pub async fn user_store_contract(store: &dyn UserStore) {
     assert_eq!(store.insert_user(alice, "other".into()).await, Err(StoreError::Conflict));
     let bob = User { id: "bob".into(), role: Role::User, created_at: 12 };
     assert_eq!(store.insert_user(bob, "hash-a".into()).await, Err(StoreError::Conflict));
+
+    // An arbiter's public key: registered, replaced as a whole, kept per user.
+    assert_eq!(store.arbiter_key("alice").await.unwrap(), None);
+    store.put_arbiter_key("alice", "key-one", 40).await.unwrap();
+    store.put_arbiter_key("root", "key-root", 41).await.unwrap();
+    assert_eq!(store.arbiter_key("alice").await.unwrap().as_deref(), Some("key-one"));
+    store.put_arbiter_key("alice", "key-two", 50).await.unwrap();
+    assert_eq!(store.arbiter_key("alice").await.unwrap().as_deref(), Some("key-two"), "replaced");
+    assert_eq!(store.arbiter_key("root").await.unwrap().as_deref(), Some("key-root"));
 
     // A seller's node connection: saved, replaced as a whole, deleted, kept per user.
     let conn = |user: &str, address: &str, at: i64| NodeConnection {

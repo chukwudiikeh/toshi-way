@@ -330,6 +330,7 @@ name = "escrow-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "escrow-core",
  "escrow-lnd",
  "escrow-postgres",

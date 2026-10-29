@@ -9,7 +9,7 @@ use axum::{
 use escrow_core::{
     adapter::{NodeConnectError, NodeCredentials, NodeDirectory, NodeSummary},
     model::{Escrow, PaymentHash, Preimage, Role, User},
-    service::NewEscrow,
+    service::{Decision, NewEscrow},
     state::EscrowState,
     store::{Store, UserStore},
 };
@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    arbiter,
     auth::{hash_token, is_prospective_buyer, new_token, new_user_id, party_of, Auth, Party},
     error::ApiError,
     AppState,
@@ -62,6 +63,13 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
         // Whose node holds the invoice: "own" pays the seller directly; "shared" is the service's
         // node, so the service receives the sats and owes them to the seller (custodial).
         "seller_node": e.node.as_str(),
+        // Arbitration. The key is public; the sealed secret is never in this view (only the arbiter
+        // can fetch it, from /arbitration), just whether one exists.
+        "arbiter_id": e.arbiter_id,
+        "arbiter_key": e.arbiter_key,
+        "arbiter_fingerprint": e.arbiter_key.as_deref().and_then(arbiter::fingerprint),
+        "arbiter_sealed": e.arbiter_sealed.is_some(),
+        "arbiter_confirmed_at": e.arbiter_confirmed_at,
     })
 }
 
@@ -124,6 +132,9 @@ pub struct CreateReq {
     /// Omit (or leave empty) for an open offer: the first user to accept it becomes the buyer.
     #[serde(default)]
     buyer_id: Option<String>,
+    /// A trusted third party who decides if there is a dispute. They must have registered a key.
+    #[serde(default)]
+    arbiter_id: Option<String>,
     amount_sats: u64,
     description: String,
     /// Seconds from now until the settle-by deadline.
@@ -164,10 +175,40 @@ where
         }
     }
 
+    let arbiter_id = req.arbiter_id.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
+    let arbiter = match &arbiter_id {
+        None => None,
+        Some(id) => {
+            match st.users.get_user(id).await? {
+                Some(a) if a.role == Role::User => {}
+                _ => return Err(ApiError::bad_request("unknown_arbiter", "arbiter_id does not match a user")),
+            }
+            if *id == user.id || buyer_id.as_deref() == Some(id.as_str()) {
+                return Err(ApiError::bad_request(
+                    "invalid_arbiter",
+                    "the arbiter must be someone other than the buyer and the seller",
+                ));
+            }
+            let key = st.users.arbiter_key(id).await?.ok_or_else(|| {
+                ApiError::bad_request("arbiter_has_no_key", "that user has not set up a key to act as an arbiter")
+            })?;
+            // Recorded on the escrow now, so the key buyers encrypt to cannot be swapped later.
+            Some((id.clone(), key))
+        }
+    };
+
     // Idempotency-Key: a repeated create returns the first result instead of a second escrow.
     let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body_hash = hex::encode(Sha256::digest(
-        format!("{}|{}|{}|{}", buyer_id.as_deref().unwrap_or(""), req.amount_sats, req.description, req.hold_secs).as_bytes(),
+        format!(
+            "{}|{}|{}|{}|{}",
+            buyer_id.as_deref().unwrap_or(""),
+            arbiter_id.as_deref().unwrap_or(""),
+            req.amount_sats,
+            req.description,
+            req.hold_secs
+        )
+        .as_bytes(),
     ));
     let mut cache = match &key {
         Some(_) => Some(st.idempotency.entries.lock().await),
@@ -193,6 +234,7 @@ where
             NewEscrow {
                 buyer_id,
                 seller_id: user.id.clone(),
+                arbiter,
                 amount_sats: req.amount_sats,
                 description: req.description,
                 deadline_at: now.saturating_add(req.hold_secs),
@@ -242,6 +284,9 @@ where
 #[derive(Deserialize)]
 pub struct AcceptReq {
     payment_hash: String,
+    /// The release secret encrypted to the arbiter's key, required when the escrow has an arbiter.
+    #[serde(default)]
+    sealed_secret: Option<String>,
 }
 
 pub async fn accept<A, S>(
@@ -261,7 +306,7 @@ where
     let hash: PaymentHash = parse_hex32("payment_hash", &req.payment_hash)?;
     // The invoice is made on the seller's node; keep that node from being swapped meanwhile.
     let _node_guard = st.node_changes.read().await;
-    let escrow = st.service.accept(&id, hash, &user.id, (st.now)()).await?;
+    let escrow = st.service.accept_with(&id, hash, &user.id, (st.now)(), req.sealed_secret).await?;
     Ok(Json(escrow_view(&escrow, party)))
 }
 
@@ -306,8 +351,8 @@ where
     S: Store + UserStore + Clone + 'static,
 {
     let (_, party) = load(&st, &id, &user).await?;
-    if party == Party::Operator {
-        return Err(ApiError::forbidden("only the buyer or seller can release"));
+    if matches!(party, Party::Operator | Party::Arbiter) {
+        return Err(ApiError::forbidden("only the buyer or seller can release; an arbiter decides disputes"));
     }
     // Only a full 256-bit secret is accepted: short codes can be brute-forced from the hash.
     let preimage = Preimage::from_hex(&req.preimage).ok_or_else(|| {
@@ -331,6 +376,14 @@ where
     // alone: that would strip the seller's protection. Sellers and operators may.
     if party == Party::Buyer && !matches!(escrow.state, EscrowState::Created | EscrowState::InvoiceIssued) {
         return Err(ApiError::forbidden("the buyer can only cancel before paying"));
+    }
+    // The arbiter acts only through their decision, and nobody can overrule one: once an arbitrated
+    // escrow is disputed the operator can no longer cancel it either.
+    if party == Party::Arbiter {
+        return Err(ApiError::forbidden("an arbiter decides a dispute; they cannot cancel an escrow"));
+    }
+    if party == Party::Operator && escrow.arbiter_id.is_some() && escrow.state == EscrowState::Disputed {
+        return Err(ApiError::forbidden("this dispute is being decided by the arbiter"));
     }
     // Someone who has only seen an open offer's link is not its buyer and cannot decline it.
     if party == Party::Buyer && escrow.buyer_id.as_deref() != Some(user.id.as_str()) {
@@ -357,7 +410,7 @@ where
     S: Store + UserStore + Clone + 'static,
 {
     let (_, party) = load(&st, &id, &user).await?;
-    if party == Party::Operator {
+    if matches!(party, Party::Operator | Party::Arbiter) {
         return Err(ApiError::forbidden("only the buyer or seller can open a dispute"));
     }
     if req.reason.trim().is_empty() || req.reason.chars().count() > st.config.max_description_len {
@@ -514,4 +567,134 @@ fn node_in_use() -> ApiError {
         "node_in_use",
         "you have escrows in progress on this node; finish or cancel them before changing it",
     )
+}
+
+// --- Arbitration ----------------------------------------------------------------------------
+
+/// An arbiter registers the public key people encrypt release secrets to.
+#[derive(Deserialize)]
+pub struct ArbiterKeyReq {
+    public_key: String,
+}
+
+pub async fn arbiter_key_put<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    ApiJson(req): ApiJson<ArbiterKeyReq>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    if user.role == Role::Operator {
+        return Err(ApiError::forbidden("operators cannot be arbiters"));
+    }
+    arbiter::parse_public_key(&req.public_key).map_err(|m| ApiError::bad_request("invalid_key", m))?;
+    let key = req.public_key.trim();
+    st.users.put_arbiter_key(&user.id, key, (st.now)()).await?;
+    Ok(Json(json!({ "public_key": key, "fingerprint": arbiter::fingerprint(key) })))
+}
+
+pub async fn arbiter_key_get<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let key = st.users.arbiter_key(&user.id).await?;
+    Ok(Json(json!({ "public_key": key, "fingerprint": key.as_deref().and_then(arbiter::fingerprint) })))
+}
+
+/// Load an escrow the caller is the arbiter of; everyone else gets the usual 404 or a 403.
+async fn load_as_arbiter<A, S>(st: &AppState<A, S>, id: &str, user: &User) -> Result<Escrow, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let (escrow, party) = load(st, id, user).await?;
+    if party != Party::Arbiter {
+        return Err(ApiError::forbidden("only the arbiter can do this"));
+    }
+    Ok(escrow)
+}
+
+/// What the arbiter needs to judge: the buyer's secret sealed to them, and the hash it must match.
+/// Available from when the buyer accepts until the escrow ends.
+pub async fn arbitration_get<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let e = load_as_arbiter(&st, &id, &user).await?;
+    match (e.state, e.arbiter_sealed.as_ref()) {
+        (EscrowState::InvoiceIssued | EscrowState::Locked | EscrowState::Disputed, Some(sealed)) => Ok(Json(json!({
+            "sealed_secret": sealed,
+            "payment_hash": e.payment_hash.map(hex::encode),
+            "arbiter_key": e.arbiter_key,
+            "state": e.state.as_str(),
+        }))),
+        (state, _) => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "invalid_state",
+            format!("there is nothing for an arbiter to judge while the escrow is {state}"),
+        )),
+    }
+}
+
+pub async fn arbitration_confirm<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    load_as_arbiter(&st, &id, &user).await?;
+    let escrow = st.service.confirm_arbiter(&id, &user.id, (st.now)()).await?;
+    Ok(Json(escrow_view(&escrow, Party::Arbiter)))
+}
+
+#[derive(Deserialize)]
+pub struct DecideReq {
+    /// "release" (pay the seller) or "refund" (return the buyer's money).
+    decision: String,
+    /// The buyer's secret, decrypted by the arbiter. Required for "release".
+    #[serde(default)]
+    preimage: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+pub async fn arbitration_decide<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<DecideReq>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    load_as_arbiter(&st, &id, &user).await?;
+    let note = req.note.unwrap_or_default();
+    if note.chars().count() > st.config.max_description_len {
+        return Err(ApiError::bad_request("invalid_reason", "the note is limited to 500 characters"));
+    }
+    let decision = match req.decision.as_str() {
+        "refund" => Decision::Refund,
+        "release" => {
+            let hex = req.preimage.as_deref().unwrap_or("");
+            // Same rule as any release: only a full 256-bit secret.
+            Decision::Release(Preimage::from_hex(hex).ok_or_else(|| {
+                ApiError::bad_request("invalid_preimage", "preimage must be exactly 64 hex characters (32 bytes)")
+            })?)
+        }
+        _ => return Err(ApiError::bad_request("invalid_decision", "decision must be \"release\" or \"refund\"")),
+    };
+    let escrow = st.service.arbitrate(&id, &user.id, decision, &note, (st.now)()).await?;
+    Ok(Json(escrow_view(&escrow, Party::Arbiter)))
 }

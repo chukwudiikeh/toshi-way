@@ -100,6 +100,17 @@ pub struct Escrow {
     /// `None` for an open offer that nobody has accepted yet; accepting it sets the buyer.
     pub buyer_id: Option<String>,
     pub seller_id: String,
+    /// A trusted third party both sides agreed on, who decides if there is a dispute.
+    pub arbiter_id: Option<String>,
+    /// The arbiter's public key (base64 SPKI) as it was when the escrow was created. Recorded
+    /// here so the key the buyer encrypted to cannot be swapped afterwards.
+    pub arbiter_key: Option<String>,
+    /// The buyer's release secret encrypted to `arbiter_key`. Opaque to the server, which cannot
+    /// read it; only the arbiter can. Present once the buyer has accepted.
+    pub arbiter_sealed: Option<String>,
+    /// When the arbiter confirmed they can decrypt `arbiter_sealed` and that it matches the
+    /// payment hash. Until then the seller should not count on arbitration.
+    pub arbiter_confirmed_at: Option<i64>,
     /// Which node holds this escrow's invoice. Fixed at creation, so changing the seller's node
     /// settings later cannot strand an escrow that is in flight.
     pub node: NodeKind,
