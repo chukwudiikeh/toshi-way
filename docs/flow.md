@@ -354,6 +354,18 @@ Not done from the optional list: WebLN one-click payment, an in-app QR scanner, 
 
 ---
 
+## 16. Phase 5, step 4: WebLN, a camera scanner and a PostgreSQL store
+
+- **WebLN** (`web/lib/webln.ts`). If the browser has a `window.webln` wallet, the invoice box offers "Pay with my wallet". The invoice goes to the user's own wallet; the app does not wait for the payment to finish, because a wallet may keep a hold invoice's `sendPayment` pending until the escrow ends (it stops waiting after 3 s), and it never says the funds are locked: the page changes only when the API reports `LOCKED`. A refused connection or a failed payment is shown. QR and copy-paste remain.
+- **Camera scan** (`web/lib/scan.ts`, `components/escrow/Scanner.tsx`). On the seller's release form, "Scan the buyer's QR" uses the browser's own `BarcodeDetector` and camera (button only appears where both exist; frames never leave the device, no library). A scan only fills the secret field; releasing still takes a button press. Accepted: the buyer's release link for this escrow, or a bare 64-hex secret. Refused: a link for another escrow, short codes, 63/65 characters, non-hex, invoices, empty text.
+- **PostgreSQL** (`escrow-postgres`). Same `Store` and `UserStore` traits, `sqlx` Postgres, a `schema_migrations` table and an advisory lock so two servers starting together cannot both migrate. State changes are the same compare-and-set inside one transaction (under READ COMMITTED the second writer re-checks the state and updates nothing). `toshi-server` uses it when `DATABASE_URL` is set, otherwise SQLite. The database comes from the compose file's `postgres` service behind a `postgres` profile, so `setup.sh` does not start it. It starts at the current schema (open offers included): there are no old Postgres databases to upgrade.
+
+Verified: the shared store contract and user contract pass on a real PostgreSQL, plus a test that two concurrent transitions of one escrow yield exactly one winner and one audit entry, a duplicate payment hash is refused, and reconnecting keeps data. With `toshi-server` on PostgreSQL, `scripts/demo.sh` passes both demo paths against the real Lightning nodes; the rows end up `SETTLED` and `REFUNDED`, and no column in the schema could hold a secret. The Playwright suite has a sixth test: a fake WebLN wallet (bridged to `lncli`) pays, a stubbed camera and detector scan a wrong-escrow code (refused) and then the right one (fills the field, no release until pressed), then the release settles.
+
+Not verified here: a real WebLN wallet extension and a real phone camera, since neither exists in this environment; the browser APIs were stubbed.
+
+---
+
 ## Next
 
-Pick the lead demo use case and rehearse. Optional (WebLN and a Postgres store remain; open-offer links and migrations are done): WebLN one-click payment, an in-app QR scanner.
+Pick the lead demo use case and rehearse. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

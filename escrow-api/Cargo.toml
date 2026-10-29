@@ -12,6 +12,7 @@ path = "src/main.rs"
 axum = "0.8"
 escrow-core = { path = "../escrow-core" }
 escrow-lnd = { path = "../escrow-lnd" }
+escrow-postgres = { path = "../escrow-postgres" }
 escrow-sqlite = { path = "../escrow-sqlite" }
 hex = "0.4"
 rand = "0.8"
