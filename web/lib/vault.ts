@@ -36,7 +36,7 @@ export class VaultError extends Error {
   }
 }
 
-const b64 = {
+export const b64 = {
   encode(bytes: Uint8Array): string {
     let s = "";
     for (const b of bytes) s += String.fromCharCode(b);
@@ -48,9 +48,9 @@ const b64 = {
 };
 
 /** A fresh `ArrayBuffer`, so WebCrypto accepts it whatever the view's backing buffer was. */
-const buf = (bytes: Uint8Array): ArrayBuffer => bytes.slice().buffer;
+export const buf = (bytes: Uint8Array): ArrayBuffer => bytes.slice().buffer;
 
-async function deriveKey(password: string, salt: Uint8Array, iterations: number): Promise<CryptoKey> {
+export async function deriveKey(password: string, salt: Uint8Array, iterations: number): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey("raw", buf(new TextEncoder().encode(password.normalize("NFKC"))), "PBKDF2", false, [
     "deriveKey",
   ]);

@@ -572,9 +572,25 @@ Creating an account now asks for a password first, like a wallet, then shows the
 
 **Security notes.** The token must be guarded like a seed phrase: anyone who has it is you. The password only protects the copy on this device; someone who copies the encrypted vault can guess passwords offline, which PBKDF2 slows but does not stop, hence the minimum length and the common-password check. A script injected into the page (XSS) could still read the unlocked token, exactly as before. 
 
-**Not done (Phase 2).** An encrypted backup file for the things that live only in this browser: a buyer's release secrets (`toshi.secret.<escrowId>`) and an arbiter's private keys (`toshi.arbiterKey.<fingerprint>`). Lose the browser data and those are gone, token or not.
+**Backup:** see section 26.
 
 **Verified.** Unit tests for the vault (12) and session (15); a browser test that creates an account, checks the token is not in storage, locks, tries a wrong then the right password, shows the token, imports it on a second browser and removes it from the first. All 15 browser tests and the 3-scene rehearsal pass.
+
+---
+
+## 26. The backup file
+
+A token gets you into your account on any device, but two things are made in the browser and kept only there: a buyer's release secrets (`toshi.secret.<escrowId>`) and an arbiter's private keys (`toshi.arbiterKey.<fingerprint>`). Lose the browser's data and a buyer can no longer release locked money (it can only end in a refund), and an arbiter can no longer decide disputes. The backup file carries them to another device (`web/lib/backup.ts`, `web/components/BackupCard.tsx`).
+
+**What it is.** A JSON file, `toshi-way-backup-<date>.json`, encrypted with a password the same way as the vault (PBKDF2-SHA-256 into AES-256-GCM, iteration count stored in the file). It holds the secrets and keys and **never the token**, so the file alone cannot sign in as anyone. The password is the person's choice; the page suggests the account password so there is only one to remember.
+
+**Where.** The Account page has a Backup card: "Download backup", and "Restore" (choose the file, enter its password). Restoring never overwrites a secret already in the browser; it reports how many items it added and how many were already there.
+
+**Reminders.** The browser remembers which secrets and keys a backup has covered (`toshi.backup.covered`, ids only). A yellow notice (on the dashboard, an escrow page and the arbiter page) says how many are not backed up yet and links to the card; it appears right after a buyer accepts an offer or an arbiter makes a key, and goes away after a download. It is a reminder only: nothing is blocked.
+
+**Limits.** The file is only as safe as its password and wherever it is kept; a weak password is rejected (same rule as the account password). "Backed up" means the file was downloaded, not that it still exists. Backups are a snapshot: a secret made afterwards needs a new backup, which is what the reminder is for.
+
+**Verified.** 5 unit tests (collecting, round trip, wrong password, bad file, no overwrite and the pending count) and a browser test: a buyer accepts, sees the reminder, downloads the file (which contains neither the secret nor the token), then on a second browser signs in with the token, fails with a wrong backup password, restores with the right one, and has the same secret.
 
 ---
 

@@ -9,6 +9,7 @@
 // The blob is: throwaway public key (65 bytes) | nonce (12) | ciphertext+tag (48), as base64.
 // The server stores the blob but cannot open it: the private key never leaves the arbiter's browser.
 
+import { notifyChanged } from "./backup";
 import { fromHex, toHex } from "./secret";
 
 const INFO = new TextEncoder().encode("toshi-way arbiter v1");
@@ -119,6 +120,7 @@ const keyName = (fp: string) => `toshi.arbiterKey.${fp.replace(/\s+/g, "")}`;
 
 export function saveArbiterKey(fp: string, privateJwk: JsonWebKey): void {
   localStorage.setItem(keyName(fp), JSON.stringify(privateJwk));
+  notifyChanged();
 }
 
 export function loadArbiterKey(fp: string): JsonWebKey | null {
