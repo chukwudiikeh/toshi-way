@@ -15,9 +15,9 @@ import { Button, Card, CopyField, Field, inputClass, Notice } from "./ui";
  * way a wallet's password does. The token the server hands back is then shown once, as the recovery key.
  */
 export function CreateAccount({ onCreated }: { onCreated: (user: NewUser) => void }) {
-  const pw = useNewPassword();
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pw = useNewPassword(() => setError(null));
+  const [busy, setBusy] = useState(false);
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -183,9 +183,9 @@ function UnlockForm({
 
 function ImportForm({ title = "Sign in with a token", note, onBack }: { title?: string; note?: string; onBack?: () => void }) {
   const [token, setToken] = useState("");
-  const pw = useNewPassword();
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pw = useNewPassword(() => setError(null));
+  const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
