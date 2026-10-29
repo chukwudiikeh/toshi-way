@@ -103,6 +103,26 @@ export type Invoice = z.infer<typeof Invoice>;
 export const Me = z.object({ id: z.string().min(1), role: z.string() });
 export type Me = z.infer<typeof Me>;
 
+export const API_KEY_SCOPES = ["escrows:read", "escrows:write"] as const;
+export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
+
+/** A key as listed: never carries the key itself. */
+export const ApiKeyInfo = z.object({
+  id: z.string(),
+  name: z.string(),
+  last_chars: z.string(),
+  scopes: z.array(z.string()),
+  created_at: unixSecs,
+  last_used_at: unixSecs.nullable(),
+  revoked_at: unixSecs.nullable(),
+});
+export type ApiKeyInfo = z.infer<typeof ApiKeyInfo>;
+
+export const ApiKeyList = z.object({ api_keys: z.array(ApiKeyInfo) });
+/** A new key: the only time the secret is seen. */
+export const NewApiKey = ApiKeyInfo.extend({ key: z.string() });
+export type NewApiKey = z.infer<typeof NewApiKey>;
+
 export const NodeInfo = z.object({
   mode: z.enum(["own", "shared", "none"]),
   address: z.string().nullable(),
