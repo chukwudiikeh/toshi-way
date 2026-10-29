@@ -146,10 +146,10 @@ test("happy path: lock, hand over the release QR link, settle", async ({ browser
   await expect(stranger.page.getByText("Escrow not found")).toBeVisible();
 });
 
-test("refund path: a 62 second hold is refunded with nobody acting", async ({ browser }) => {
+test("refund path: a short hold is refunded with nobody acting", async ({ browser }) => {
   const seller = await newParty(browser);
   const buyer = await newParty(browser);
-  const id = await createEscrow(seller, buyer.id, "e2e refund", ["1.04", "minutes"]); // 62 s
+  const id = await createEscrow(seller, buyer.id, "e2e refund", ["1.25", "minutes"]); // 75 s: the shortest allowed is 60 s, and the buyer needs a few seconds to accept
   await acceptAndPay(buyer, seller, id);
   for (const p of [seller.page, buyer.page]) {
     await expect(stateBadge(p, "Refunded")).toBeVisible({ timeout: 120_000 });
@@ -560,4 +560,52 @@ test("dashboard: shows whose move it is, what is locked, and lets you filter you
   // A row opens the escrow.
   await table.getByText("e2e dashboard parcel").click();
   await seller.page.waitForURL(new RegExp(`/escrows/${id}$`));
+});
+
+test("escrow page: the progress moves, the next move changes hands, and a long description splits into a title and terms", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  // The title leads the description and the rest become the terms.
+  await seller.page.goto("/escrows/new");
+  await seller.page.getByLabel("Deal title").fill("Fabric order to Abuja");
+  await seller.page.getByLabel("Description").fill("Deliver by Friday noon\nFragile: keep dry");
+  await seller.page.getByRole("button", { name: "Continue" }).click();
+  await seller.page.getByLabel("Buyer's user id").fill(buyer.id);
+  await seller.page.getByLabel("Amount (sats)").fill("2000");
+  await seller.page.getByLabel("Hold time amount").fill("30");
+  await seller.page.getByLabel("Hold time unit").selectOption("minutes");
+  await seller.page.getByRole("button", { name: "Create escrow" }).click();
+  await seller.page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
+  const id = seller.page.url().split("/").pop()!;
+
+  const progress = (p: Party) => p.page.getByRole("navigation", { name: "Escrow progress" });
+  const current = (p: Party) => progress(p).locator('[aria-current="step"]');
+  const move = (p: Party) => p.page.getByRole("region", { name: "Your move" });
+
+  // The long text became a title and a terms block, and the amount leads the page.
+  await expect(seller.page.getByRole("heading", { level: 1, name: "Fabric order to Abuja" })).toBeVisible();
+  const terms = seller.page.getByRole("region", { name: "Terms" });
+  await expect(terms).toContainText("Deliver by Friday noon");
+  await expect(terms).toContainText("Fragile: keep dry");
+  await expect(seller.page.getByText("2,000 sats").first()).toBeVisible();
+
+  // An offer: the tracker is on the first step; the seller waits and the buyer has the move.
+  await expect(current(seller)).toContainText("Offer");
+  await expect(move(seller)).toContainText("Waiting for the buyer to accept");
+  await buyer.page.goto(`/escrows/${id}`);
+  await expect(move(buyer)).toContainText("Accept this offer");
+  await expect(buyer.page.getByText("you", { exact: true })).toBeVisible(); // marked as you in "People"
+
+  // Accepting and paying moves the tracker along and passes the move to the right person.
+  await acceptAndPay(buyer, seller, id);
+  await expect(current(buyer)).toContainText("Funds locked");
+  await expect(move(buyer)).toContainText("Release when you have the goods");
+  await expect(move(seller)).toContainText("Deliver, then release with the buyer's secret");
+  await expect(progress(buyer).getByText("Offer")).toBeVisible();
+
+  // The side details say where the money goes, and the technical details open on demand.
+  await expect(seller.page.getByText("Funds go to")).toBeVisible();
+  await seller.page.getByText("Technical details").click();
+  await expect(seller.page.getByText("Payment hash")).toBeVisible();
 });

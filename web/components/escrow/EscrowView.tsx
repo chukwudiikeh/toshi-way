@@ -4,13 +4,12 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { describeError } from "@/lib/api";
-import { formatLocalTime, formatSats } from "@/lib/clock";
-import { formatFiat, formatRate } from "@/lib/fiat";
 import { parseReleaseFragment } from "@/lib/secret";
 import { useSession } from "@/lib/session";
 import type { NewUser } from "@/lib/schemas";
 import { CreateAccount, SignIn, TokenReveal } from "../Account";
-import { Card, CopyField, Notice, Spinner, StateBadge } from "../ui";
+import { Card, Notice, Spinner } from "../ui";
+import { DetailsCard, EscrowHeader, PeopleCard, Progress, TechnicalCard, Terms, YourMove } from "./EscrowSummary";
 import { useEscrow, useEvents } from "./hooks";
 import { EscrowPanel } from "./panels";
 import { Timeline } from "./Timeline";
@@ -104,93 +103,21 @@ function Loaded({ id, linkSecret }: { id: string; linkSecret: string | null }) {
           {describeError(error)} Showing the last known state; this page keeps retrying.
         </Notice>
       )}
-      <Summary escrow={escrow} />
-      <EscrowPanel escrow={escrow} setEscrow={setEscrow} refresh={refresh} linkSecret={linkSecret} events={events} />
-      <Timeline events={events} escrow={escrow} />
-    </>
-  );
-}
-
-function Summary({ escrow }: { escrow: NonNullable<ReturnType<typeof useEscrow>["escrow"]> }) {
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">
-            Escrow · you are the {escrow.your_role}
-          </div>
-          <h1 className="break-words text-xl font-bold sm:text-2xl">{escrow.description || "(no description)"}</h1>
+      <EscrowHeader escrow={escrow} />
+      <Progress escrow={escrow} />
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="min-w-0 space-y-6">
+          <YourMove escrow={escrow} />
+          <EscrowPanel escrow={escrow} setEscrow={setEscrow} refresh={refresh} linkSecret={linkSecret} events={events} />
+          <Terms escrow={escrow} />
+          <Timeline events={events} escrow={escrow} />
         </div>
-        <StateBadge state={escrow.state} />
+        <aside className="min-w-0 space-y-4">
+          <DetailsCard escrow={escrow} />
+          <PeopleCard escrow={escrow} />
+          <TechnicalCard escrow={escrow} />
+        </aside>
       </div>
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        {escrow.arbiter_id && (
-          <div className="sm:col-span-2">
-            <dt className="text-neutral-500">Arbiter</dt>
-            <dd className="text-sm">
-              <span className="font-mono">{escrow.arbiter_id}</span>
-              {" · "}
-              {escrow.arbiter_confirmed_at ? (
-                <span className="font-medium text-emerald-700 dark:text-emerald-400">confirmed</span>
-              ) : (
-                <span className="font-medium text-amber-700 dark:text-amber-400">not confirmed yet</span>
-              )}
-              <div className="break-words font-mono text-xs text-neutral-500">key {escrow.arbiter_fingerprint}</div>
-            </dd>
-          </div>
-        )}
-        <div>
-          <dt className="text-neutral-500">Funds go to</dt>
-          <dd className="text-sm font-medium">
-            {escrow.seller_node === "own" ? (
-              <span className="text-emerald-700 dark:text-emerald-400">The seller&apos;s own node</span>
-            ) : (
-              <span className="text-amber-700 dark:text-amber-400" title="The service receives the sats and owes them to the seller">
-                The service&apos;s shared node (custodial)
-              </span>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-neutral-500">Amount</dt>
-          <dd className="font-mono text-lg font-semibold tabular-nums">{formatSats(escrow.amount_sats)}</dd>
-          {escrow.fiat && (
-            <dd
-              className="text-sm text-neutral-600 dark:text-neutral-400"
-              title="Display only. Worked out once when the offer was made and never updated; the price of bitcoin moves, so what this sum is worth now will differ."
-            >
-              ≈ {formatFiat(escrow.fiat.amount_minor, escrow.fiat.currency, escrow.fiat.exponent)} when offered
-              <span className="block text-xs text-neutral-500">
-                at {formatRate(escrow.fiat.rate_minor_per_btc, escrow.fiat.currency, escrow.fiat.exponent)} per bitcoin ·{" "}
-                {escrow.fiat.source} · {formatLocalTime(escrow.fiat.quoted_at)} · display only
-              </span>
-            </dd>
-          )}
-        </div>
-        <div>
-          <dt className="text-neutral-500">Created</dt>
-          <dd>{formatLocalTime(escrow.created_at)}</dd>
-        </div>
-      </dl>
-      <details className="text-xs text-neutral-500">
-        <summary className="cursor-pointer">Ids</summary>
-        <div className="mt-2 space-y-2">
-          <div>
-            Escrow <CopyField value={escrow.id} />
-          </div>
-          <div>
-            Buyer {escrow.buyer_id ? <CopyField value={escrow.buyer_id} /> : "not chosen yet (open offer)"}
-          </div>
-          <div>
-            Seller <CopyField value={escrow.seller_id} />
-          </div>
-          {escrow.payment_hash && (
-            <div>
-              Payment hash <CopyField value={escrow.payment_hash} />
-            </div>
-          )}
-        </div>
-      </details>
-    </div>
+    </>
   );
 }
