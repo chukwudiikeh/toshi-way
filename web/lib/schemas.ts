@@ -62,6 +62,9 @@ export type EscrowEvents = z.infer<typeof EscrowEvents>;
 export const Invoice = z.object({ payment_request: z.string().min(1), expires_at: unixSecs.nullable() });
 export type Invoice = z.infer<typeof Invoice>;
 
+export const Me = z.object({ id: z.string().min(1), role: z.string() });
+export type Me = z.infer<typeof Me>;
+
 export const NewUser = z.object({ id: z.string().min(1), role: z.string(), token: z.string().min(1) });
 export type NewUser = z.infer<typeof NewUser>;
 

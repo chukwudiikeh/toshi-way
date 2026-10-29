@@ -97,6 +97,11 @@ where
     }
 }
 
+/// Who the caller is, so a client holding only a token can learn its id and role.
+pub async fn me(Auth(user): Auth) -> Json<Value> {
+    Json(json!({ "id": user.id, "role": user.role.as_str() }))
+}
+
 pub async fn register<A, S>(State(st): State<AppState<A, S>>) -> Result<(StatusCode, Json<Value>), ApiError>
 where
     A: LightningAdapter + 'static,
@@ -312,7 +317,7 @@ where
     let (escrow, party) = load(&st, &id, &user).await?;
     // Cancelling after the buyer has paid gives the buyer a refund, so the buyer may not do it
     // alone: that would strip the seller's protection. Sellers and operators may.
-    if party == Party::Buyer && escrow.state != EscrowState::InvoiceIssued {
+    if party == Party::Buyer && !matches!(escrow.state, EscrowState::Created | EscrowState::InvoiceIssued) {
         return Err(ApiError::forbidden("the buyer can only cancel before paying"));
     }
     let reason = format!("cancelled by {}", party.as_str());

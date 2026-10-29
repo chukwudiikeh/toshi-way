@@ -9,6 +9,7 @@ import {
   EscrowList,
   Health,
   Invoice,
+  Me,
   NewUser,
   type NewEscrowRequest,
 } from "./schemas";
@@ -92,6 +93,8 @@ export const api = {
   },
 
   register: () => request("POST", "/api/v1/users", NewUser, { token: null }),
+
+  me: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me", Me, opts),
 
   listMine: (opts?: Pick<Options, "token" | "keepSessionOn401">) =>
     request("GET", "/api/v1/escrows", EscrowList, opts),

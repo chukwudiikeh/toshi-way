@@ -311,6 +311,19 @@ Checked by hand as well: stopping `toshi-server` mid-escrow shows "can't reach t
 
 ---
 
+## 13. Phase 5, step 1: offers that can end, and `GET /api/v1/me`
+
+Two gaps from section 12.
+
+- **`CREATED` offers can now end.** Added the transition `CREATED -> EXPIRED_UNPAID` (no new state, so the web schema is unchanged). `cancel` on a `CREATED` escrow moves it there without any node call, since no invoice exists. The seller and operator can do it, and so can the buyer (declining). `tick` also expires a `CREATED` escrow once `now >= deadline_at`, so abandoned offers leave the operator queue by themselves. If the buyer accepts at the same moment, the compare-and-set decides and the loser gets `invalid_state`. The UI text for `EXPIRED_UNPAID` was reworded from "invoice expired" to "ended without a payment".
+- **`GET /api/v1/me`** returns `{id, role}`. Sign-in now uses it, which removed the operator-endpoint probe, the 403 check and the optional user-id field.
+
+Tests: 4 new API tests (withdraw, decline plus stranger gets 404, expiry at the deadline, `/me`) and one web test for `api.me`. `cargo test --workspace` and the 45 web unit tests pass; `npm run lint` and `npm run build` are clean. The Playwright test was not re-run in this step.
+
+Environment note: this Codespace had no Rust or `protoc`; installed with rustup and `apt install protobuf-compiler`.
+
+---
+
 ## Next
 
-Phase 4 hardening: let `CREATED` offers be withdrawn or expire, a `GET /api/v1/me` endpoint, a restricted invoice macaroon instead of `admin.macaroon`, and a restart test against the real node. Optional: WebLN one-click payment, an in-app QR scanner.
+Phase 5 hardening: a restricted invoice macaroon instead of `admin.macaroon`, and a restart test against the real node. Optional: WebLN one-click payment, an in-app QR scanner.

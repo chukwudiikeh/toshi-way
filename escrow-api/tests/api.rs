@@ -589,3 +589,54 @@ async fn the_view_exposes_invoice_expiry_for_countdowns() {
     let (_, v) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&buyer.token), None).await;
     assert_eq!(v["invoice_expires_at"], T0 + 600);
 }
+
+#[tokio::test]
+async fn seller_can_withdraw_an_unaccepted_offer() {
+    let app = app().await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&seller.token), None).await;
+    assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("EXPIRED_UNPAID")), "{v}");
+    assert_eq!(app.node.cancel_calls(), 0, "no invoice exists, so the node is never called");
+
+    // Repeating it is a no-op, and the buyer can no longer accept.
+    let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&seller.token), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(app.accept(&buyer, &id, &secret(1)).await.0, StatusCode::CONFLICT);
+    let (_, v) = app.call(Method::GET, "/api/v1/operator/escrows", Some(OPERATOR_TOKEN), None).await;
+    assert!(v["escrows"].as_array().unwrap().is_empty(), "withdrawn offers leave the queue");
+}
+
+#[tokio::test]
+async fn buyer_can_decline_an_offer_and_a_stranger_cannot() {
+    let app = app().await;
+    let (seller, buyer, other) = (app.register().await, app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&other.token), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(&buyer.token), None).await;
+    assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("EXPIRED_UNPAID")));
+}
+
+#[tokio::test]
+async fn unaccepted_offers_expire_at_their_deadline() {
+    let app = app().await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    app.service.tick(T0 + 3599).await.unwrap();
+    assert_eq!(app.state(&seller.token, &id).await, "CREATED");
+    app.service.tick(T0 + 3600).await.unwrap();
+    assert_eq!(app.state(&seller.token, &id).await, "EXPIRED_UNPAID");
+}
+
+#[tokio::test]
+async fn me_reports_the_callers_id_and_role() {
+    let app = app().await;
+    let user = app.register().await;
+    let (s, v) = app.call(Method::GET, "/api/v1/me", Some(&user.token), None).await;
+    assert_eq!((s, v["id"].as_str(), v["role"].as_str()), (StatusCode::OK, Some(user.id.as_str()), Some("user")));
+    let (s, v) = app.call(Method::GET, "/api/v1/me", Some(OPERATOR_TOKEN), None).await;
+    assert_eq!((s, v["role"].as_str()), (StatusCode::OK, Some("operator")));
+    let (s, _) = app.call(Method::GET, "/api/v1/me", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
