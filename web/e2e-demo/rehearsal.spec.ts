@@ -46,14 +46,22 @@ async function shot(p: Persona, name: string) {
 }
 
 /** The courier makes an offer. Leave `arbiter` out for a plain one; the buyer is left open (a link). */
-async function makeOffer(courier: Persona, what: string, sats: string, hold: [string, "minutes"], arbiter?: string) {
+async function makeOffer(
+  courier: Persona,
+  what: string,
+  sats: string,
+  hold: [string, "minutes"],
+  arbiter?: string,
+  currency?: string,
+) {
   const { page } = courier;
   await page.goto("/escrows/new");
   if (arbiter) await page.getByLabel("Arbiter's user id").fill(arbiter);
+  if (currency) await page.getByLabel("Also show the value in").selectOption(currency);
   await page.getByLabel("Amount (sats)").fill(sats);
   await page.getByLabel("Description").fill(what);
-  await page.getByLabel("Hold time").fill(hold[0]);
-  await page.locator("select").selectOption(hold[1]);
+  await page.getByLabel("Hold time amount").fill(hold[0]);
+  await page.getByLabel("Hold time unit").selectOption(hold[1]);
   await page.getByRole("button", { name: "Create escrow" }).click();
   await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
   return page.url().split("/").pop()!;
@@ -84,12 +92,16 @@ test.describe("scene 1: a delivery, paid on handover", () => {
     stamp("both signed in");
 
     // The courier names no buyer: the escrow page is a link to send to the customer.
-    const id = await makeOffer(courier, "Parcel #4821 to Lekki, Lagos", "5000", ["30", "minutes"]);
+    // The parcel goes to Lagos, so the courier also shows what 5,000 sats is worth in naira.
+    const id = await makeOffer(courier, "Parcel #4821 to Lekki, Lagos", "5000", ["30", "minutes"], undefined, "NGN");
+    await expect(courier.page.getByText("≈ ₦4,875.00 when offered")).toBeVisible();
     await expect(courier.page.getByText("Funds go to").locator("..").getByText("The seller's own node")).toBeVisible();
     await shot(courier, "1a-courier-offer");
     stamp("offer created");
 
     await acceptAndPay(customer, id);
+    // The customer sees the same locked value in naira, marked as display only.
+    await expect(customer.page.getByText("≈ ₦4,875.00 when offered")).toBeVisible();
     await expect(badge(courier.page, "Funds locked")).toBeVisible();
     await expect(courier.page.getByText("Funds are locked: you can start the work.")).toBeVisible();
     // The stand-in wallet says what it is on screen, so nobody in the room is misled.

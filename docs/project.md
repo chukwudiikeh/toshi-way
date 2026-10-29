@@ -39,7 +39,7 @@ The service runs the node and holds `P`, settling or cancelling based on a verif
 
 ## Non-goals (MVP)
 
-Custody beyond what the node holds in flight, fiat on/off-ramps, custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
+Custody beyond what the node holds in flight, fiat on/off-ramps or conversion (a display-only fiat value is built, see below), custom routing, holds longer than a day or two, custodial wallets as the seller side, tokens, native mobile apps, and proof that the real-world work happened.
 
 ## Escrow state machine
 
@@ -80,6 +80,16 @@ Each escrow records which node holds its invoice (`seller_node` in the API):
 
 The kind is fixed when the escrow is created, so changing node settings cannot strand an invoice. A seller cannot change or remove their node while an escrow with an invoice is in flight on it.
 
+## Fiat display
+
+An optional, **display-only** fiat value (PRD FR-16) so people can see roughly what a sum is worth in their own currency. There is no conversion: the escrow is always in sats, and nothing in the escrow logic reads the fiat value.
+
+- **Locked at creation.** When the seller picks a currency, the server takes a rate once and stores the currency, the rate, the computed amount, when it was taken and where it came from. It never changes afterwards, whatever bitcoin does (tested: a halved price and a dead feed leave an existing escrow's value untouched, even through settlement). The UI shows it as "≈ ₦4,875.00 when offered, at ₦97,500,000.00 per bitcoin, <source>, display only".
+- **Integer money.** The rate is stored as minor units per bitcoin (cents, kobo, ...) and amounts in the currency's minor unit, rounded half up in 128-bit integers; the web preview mirrors the same arithmetic. Supported: USD, EUR, GBP, CAD, AUD, CHF, JPY, NGN, KES, GHS, ZAR, INR, BRL.
+- **The server fetches rates, the browser never does**, so the page still makes no third-party calls. `FIAT_PROVIDER` selects the source: `off` (the default), `coingecko` (all currencies above, including naira), `mempool` (mempool.space, 7 currencies, no African currencies), or `fixed:USD=65000,NGN=97500000` (demo rates, labelled "demo rate", for regtest where there is no market). Live rates are cached for a minute, a stale one is used for up to ten minutes if the feed is down, and then it is unavailable.
+- **Failure is explicit.** If a seller asks for a value and the feed is down, creation fails with `rate_unavailable` rather than quietly dropping it; leaving the value out always works. A zero or absurd rate is treated as a broken feed.
+- **Honest caveat.** This is a snapshot at the moment of the offer. Over a multi-hour hold the price will move, and the page says so.
+
 ## Arbitration
 
 A seller can name an **arbiter** when creating an escrow: a user both sides trust to decide a dispute. Without one, behaviour is unchanged (a dispute is flagged and the operator can cancel).
@@ -98,7 +108,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id` optional: omit it for an open offer; `arbiter_id` optional) |
+| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id`, `arbiter_id` and `fiat_currency` are optional; omit the buyer for an open offer) |
 | POST | `/api/v1/escrows/:id/accept` | Buyer accepts and submits `H` (and `sealed_secret` when there is an arbiter) |
 | GET | `/api/v1/escrows/:id` | Details and state |
 | GET | `/api/v1/escrows/:id/invoice` | Hold invoice to pay |
@@ -107,6 +117,8 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 | POST | `/api/v1/escrows/:id/dispute` | Flag a dispute |
 | GET | `/api/v1/escrows/:id/events` | Audit and event history |
 | GET | `/api/v1/me` | The caller's `{id, role}` |
+| GET | `/api/v1/rates` | Whether fiat values are on, the price source, and the offered currencies |
+| GET | `/api/v1/rates/:currency` | The current price of one bitcoin in a currency, to preview a value |
 | GET / PUT | `/api/v1/me/arbiter-key` | Read or register the public key buyers encrypt release secrets to (arbiters) |
 | GET | `/api/v1/escrows/:id/arbitration` | The arbiter fetches the sealed secret and hash to judge |
 | POST | `/api/v1/escrows/:id/arbitration/confirm` | The arbiter confirms they can open it |
@@ -175,7 +187,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Sellers bring their own node (non-goal lifted): per-seller node directory, encrypted credentials, `/api/v1/me/node`, "My node" page, second regtest seller node
 - [x] Arbitration (non-goal lifted): optional arbiter per escrow, buyer's secret sealed to them in the browser, confirmation, release-or-refund decision on the record
 - [x] Demo preparation: lead use case chosen (courier delivery), `scripts/demo-env.sh`, seeded cast, demo wallet, `docs/demo.md`, scripted rehearsal (`npm run rehearse`)
-- [ ] Trying real wallets on a public network (signet)
+- [x] Fiat display (PRD FR-16): optional currency per escrow, rate taken and locked at creation, display only (`FIAT_PROVIDER`)
+- [ ] Trying real wallets on a public network (a signet attempt was abandoned: see `docs/flow.md`, section 21)
 
 ## Open questions
 
