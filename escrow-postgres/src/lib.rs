@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use escrow_core::{
+    fiat::FiatQuote,
     model::{AuditEntry, Escrow, NodeConnection, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, User},
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError, UserStore},
@@ -19,10 +20,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/001_initial.sql"),
     include_str!("migrations/002_own_nodes.sql"),
     include_str!("migrations/003_arbitration.sql"),
+    include_str!("migrations/004_fiat.sql"),
 ];
 
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
-     arbiter_confirmed_at, node, amount_sats, description, payment_hash, \
+     arbiter_confirmed_at, node, amount_sats, \
+     fiat_currency, fiat_amount_minor, fiat_rate_minor, fiat_quoted_at, fiat_source, description, payment_hash, \
      invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
 
 /// Arbitrary constant naming the advisory lock that serialises migrations between instances.
@@ -111,6 +114,7 @@ fn escrow_from_row(row: &PgRow) -> Result<Escrow, StoreError> {
         arbiter_confirmed_at: row.try_get("arbiter_confirmed_at").map_err(backend)?,
         node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
+        fiat: fiat_from_row(row)?,
         description: row.try_get("description").map_err(backend)?,
         payment_hash: payment_hash.as_deref().map(hash_from_hex).transpose()?,
         invoice: row.try_get("invoice").map_err(backend)?,
@@ -120,6 +124,23 @@ fn escrow_from_row(row: &PgRow) -> Result<Escrow, StoreError> {
         created_at: row.try_get("created_at").map_err(backend)?,
         updated_at: row.try_get("updated_at").map_err(backend)?,
     })
+}
+
+fn fiat_from_row(row: &PgRow) -> Result<Option<FiatQuote>, StoreError> {
+    let currency: Option<String> = row.try_get("fiat_currency").map_err(backend)?;
+    let Some(currency) = currency else { return Ok(None) };
+    let need = |name: &str| -> Result<i64, StoreError> {
+        row.try_get::<Option<i64>, _>(name)
+            .map_err(backend)?
+            .ok_or_else(|| StoreError::Backend(format!("a stored fiat quote is missing {name}")))
+    };
+    Ok(Some(FiatQuote {
+        currency,
+        amount_minor: need("fiat_amount_minor")?,
+        rate_minor_per_btc: need("fiat_rate_minor")?,
+        quoted_at: need("fiat_quoted_at")?,
+        source: row.try_get::<Option<String>, _>("fiat_source").map_err(backend)?.unwrap_or_default(),
+    }))
 }
 
 fn audit_from_row(row: &PgRow) -> Result<AuditEntry, StoreError> {
@@ -152,7 +173,7 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for PostgresStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
@@ -163,6 +184,11 @@ impl Store for PostgresStore {
         .bind(e.arbiter_confirmed_at)
         .bind(e.node.as_str())
         .bind(e.amount_sats as i64)
+        .bind(e.fiat.as_ref().map(|f| f.currency.as_str()))
+        .bind(e.fiat.as_ref().map(|f| f.amount_minor))
+        .bind(e.fiat.as_ref().map(|f| f.rate_minor_per_btc))
+        .bind(e.fiat.as_ref().map(|f| f.quoted_at))
+        .bind(e.fiat.as_ref().map(|f| f.source.as_str()))
         .bind(&e.description)
         .bind(e.payment_hash.map(hex::encode))
         .bind(&e.invoice)

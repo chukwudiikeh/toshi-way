@@ -12,6 +12,8 @@ import {
   ArbiterKey,
   Arbitration,
   Me,
+  RateQuote,
+  RatesInfo,
   NodeInfo,
   NewUser,
   type NewEscrowRequest,
@@ -120,6 +122,12 @@ export const api = {
       body: sealedSecret ? { payment_hash: paymentHash, sealed_secret: sealedSecret } : { payment_hash: paymentHash },
     }),
 
+  /** Whether fiat values are on, and which currencies. */
+  rates: () => request("GET", "/api/v1/rates", RatesInfo),
+
+  /** The current price of one bitcoin in `currency`, to preview a value before creating. */
+  rate: (currency: string) => request("GET", `/api/v1/rates/${encodeURIComponent(currency)}`, RateQuote),
+
   arbiterKey: () => request("GET", "/api/v1/me/arbiter-key", ArbiterKey),
 
   setArbiterKey: (publicKey: string) =>
@@ -163,6 +171,12 @@ export function describeError(err: unknown): string {
     case "invalid_key":
     case "invalid_decision":
       return err.message;
+    case "fiat_disabled":
+      return "This server doesn't show fiat values.";
+    case "unsupported_currency":
+      return err.message;
+    case "rate_unavailable":
+      return "The price feed is unavailable right now. Try again, or leave the fiat value out.";
     case "no_node":
       return "Connect your own Lightning node before creating an escrow.";
     case "node_in_use":

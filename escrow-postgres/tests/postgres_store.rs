@@ -53,6 +53,7 @@ async fn connecting_again_does_not_re_run_migrations_or_lose_data() {
             NewEscrow {
                 buyer_id: None,
                 arbiter: None,
+                fiat: None,
                 seller_id: "seller".into(),
                 amount_sats: 1000,
                 description: "open offer".into(),
@@ -81,6 +82,7 @@ async fn only_one_of_two_concurrent_transitions_wins() {
             NewEscrow {
                 buyer_id: Some("buyer".into()),
         arbiter: None,
+        fiat: None,
                 seller_id: "seller".into(),
                 amount_sats: 1000,
                 description: "race".into(),
@@ -120,6 +122,7 @@ async fn a_duplicate_payment_hash_is_a_conflict() {
     let offer = || NewEscrow {
         buyer_id: Some("buyer".into()),
         arbiter: None,
+        fiat: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "dup".into(),

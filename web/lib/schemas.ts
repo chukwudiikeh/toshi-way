@@ -53,6 +53,21 @@ export const Escrow = z.object({
   arbiter_sealed: z.boolean().default(false),
   /** When the arbiter confirmed they can open it; until then the seller should not rely on arbitration. */
   arbiter_confirmed_at: unixSecs.nullable().default(null),
+  /**
+   * What the sum was worth in a currency when the offer was made: display only, locked at creation.
+   * Amounts are in the currency's minor unit (cents, kobo, ...).
+   */
+  fiat: z
+    .object({
+      currency: z.string().min(3).max(3),
+      exponent: z.number().int().min(0).max(2),
+      amount_minor: z.number().int().nonnegative(),
+      rate_minor_per_btc: z.number().int().positive(),
+      quoted_at: unixSecs,
+      source: z.string(),
+    })
+    .nullable()
+    .default(null),
 });
 export type Escrow = z.infer<typeof Escrow>;
 
@@ -121,6 +136,22 @@ export const Arbitration = z.object({
 });
 export type Arbitration = z.infer<typeof Arbitration>;
 
+export const RatesInfo = z.object({
+  enabled: z.boolean(),
+  source: z.string(),
+  currencies: z.array(z.object({ code: z.string(), exponent: z.number().int().min(0).max(2) })),
+});
+export type RatesInfo = z.infer<typeof RatesInfo>;
+
+export const RateQuote = z.object({
+  currency: z.string(),
+  exponent: z.number().int().min(0).max(2),
+  rate_minor_per_btc: z.number().int().positive(),
+  quoted_at: unixSecs,
+  source: z.string(),
+});
+export type RateQuote = z.infer<typeof RateQuote>;
+
 export const NewUser = z.object({ id: z.string().min(1), role: z.string(), token: z.string().min(1) });
 export type NewUser = z.infer<typeof NewUser>;
 
@@ -146,6 +177,8 @@ export const NewEscrowForm = z
   .object({
     /** Optional: someone both sides trust to decide a dispute. */
     arbiter_id: z.string().trim().default(""),
+    /** Optional: also show the amount in this currency (display only). Empty means none. */
+    fiat_currency: z.string().trim().default(""),
     /** Optional: leave empty for an open offer that the first user to accept becomes the buyer of. */
     buyer_id: z.string().trim(),
     amount_sats: z.coerce
@@ -174,6 +207,7 @@ export const NewEscrowForm = z
     return {
       ...(f.buyer_id ? { buyer_id: f.buyer_id } : {}),
       ...(f.arbiter_id ? { arbiter_id: f.arbiter_id } : {}),
+      ...(f.fiat_currency ? { fiat_currency: f.fiat_currency } : {}),
       amount_sats: f.amount_sats,
       description: f.description,
       hold_secs,

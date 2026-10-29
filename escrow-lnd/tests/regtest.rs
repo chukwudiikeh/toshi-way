@@ -148,6 +148,7 @@ fn offer(hold_secs: i64) -> NewEscrow {
     NewEscrow {
         buyer_id: Some("buyer".into()),
         arbiter: None,
+        fiat: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "regtest escrow".into(),
@@ -162,7 +163,7 @@ async fn state_of<D: NodeDirectory>(svc: &EscrowService<D, Arc<SqliteStore>>, id
 #[tokio::test]
 #[ignore = "needs the regtest network"]
 async fn service_settles_and_refunds_driven_by_live_node_events() {
-    let (svc, seller) = service().await;
+    let (svc, _seller) = service().await;
     let events = tokio::spawn({
         let svc = svc.clone();
         async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }
@@ -199,7 +200,7 @@ async fn service_settles_and_refunds_driven_by_live_node_events() {
 #[tokio::test]
 #[ignore = "needs the regtest network; takes about a minute"]
 async fn scheduler_refunds_automatically_at_the_deadline() {
-    let (svc, seller) = service().await;
+    let (svc, _seller) = service().await;
     let events = tokio::spawn({
         let svc = svc.clone();
         async move { runner::run_event_loop(&svc, runner::EventLoopConfig::default(), pending()).await }

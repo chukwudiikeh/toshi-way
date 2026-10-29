@@ -9,6 +9,7 @@ name = "toshi-server"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 escrow-core = { path = "../escrow-core" }
@@ -16,6 +17,8 @@ escrow-lnd = { path = "../escrow-lnd" }
 escrow-postgres = { path = "../escrow-postgres" }
 escrow-sqlite = { path = "../escrow-sqlite" }
 hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+thiserror = "2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

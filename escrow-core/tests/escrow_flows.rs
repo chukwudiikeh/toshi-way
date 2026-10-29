@@ -39,6 +39,7 @@ fn offer(deadline_at: i64) -> NewEscrow {
         buyer_id: Some("buyer".into()),
         seller_id: "seller".into(),
         arbiter: None,
+        fiat: None,
         amount_sats: 1000,
         description: "deliver the parcel".into(),
         deadline_at,

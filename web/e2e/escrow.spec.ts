@@ -68,8 +68,8 @@ async function createEscrow(
   if (arbiterId) await page.getByLabel("Arbiter's user id").fill(arbiterId);
   await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByLabel("Description").fill(description);
-  await page.getByLabel("Hold time").fill(hold[0]);
-  await page.locator("select").selectOption(hold[1]);
+  await page.getByLabel("Hold time amount").fill(hold[0]);
+  await page.getByLabel("Hold time unit").selectOption(hold[1]);
   await page.getByRole("button", { name: "Create escrow" }).click();
   await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
   return page.url().split("/").pop()!;
@@ -195,8 +195,8 @@ test("open offer: a link anyone can open; a brand-new visitor becomes the buyer"
   await page.goto("/escrows/new");
   await page.getByLabel("Amount (sats)").fill("1000");
   await page.getByLabel("Description").fill("e2e open offer");
-  await page.getByLabel("Hold time").fill("30");
-  await page.locator("select").selectOption("minutes");
+  await page.getByLabel("Hold time amount").fill("30");
+  await page.getByLabel("Hold time unit").selectOption("minutes");
   await page.getByRole("button", { name: "Create escrow" }).click(); // no buyer id
   await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
   const id = page.url().split("/").pop()!;
@@ -439,4 +439,41 @@ test("arbitration: an arbiter without their private key on this device cannot de
   const stranger = await newParty(browser);
   await stranger.page.goto(`/escrows/${id}`);
   await expect(stranger.page.getByText("Escrow not found")).toBeVisible();
+});
+
+
+test("a fiat value is shown beside the sats, worked out once at creation, and matches the preview", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+  const { page } = seller;
+  await page.goto("/escrows/new");
+  // Needs a server with FIAT_PROVIDER set (the demo environment has it); skip where fiat is off.
+  await page.getByLabel("Amount (sats)").waitFor();
+  test.skip((await page.getByLabel("Also show the value in").count()) === 0, "fiat values are not enabled on this server");
+
+  await page.getByLabel("Buyer's user id").fill(buyer.id);
+  await page.getByLabel("Amount (sats)").fill("5000");
+  await page.getByLabel("Description").fill("e2e fiat value");
+  await page.getByLabel("Hold time amount").fill("30");
+  await page.getByLabel("Hold time unit").selectOption("minutes");
+  await page.getByLabel("Also show the value in").selectOption("NGN");
+
+  // The preview is computed in the browser from the server's rate: 5,000 sats at 97,500,000 NGN per bitcoin.
+  await expect(page.getByText("≈ ₦4,875.00")).toBeVisible();
+  await expect(page.getByText(/₦97,500,000\.00 per bitcoin \(demo rate\)/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Create escrow" }).click();
+  await page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
+  const id = page.url().split("/").pop()!;
+
+  // The escrow is still in sats, and shows the locked value, its rate, source, and that it is display only.
+  await expect(page.getByText("5,000 sats").first()).toBeVisible();
+  await expect(page.getByText("≈ ₦4,875.00 when offered")).toBeVisible();
+  await expect(page.getByText(/demo rate .* display only/)).toBeVisible();
+
+  // The buyer sees the same locked value, and it appears in their list.
+  await buyer.page.goto(`/escrows/${id}`);
+  await expect(buyer.page.getByText("≈ ₦4,875.00 when offered")).toBeVisible();
+  await buyer.page.goto("/");
+  await expect(buyer.page.getByText("≈ ₦4,875.00")).toBeVisible();
 });

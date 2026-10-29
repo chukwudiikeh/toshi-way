@@ -115,6 +115,7 @@ mod tests {
             arbiter_sealed: None,
             arbiter_confirmed_at: None,
             node: escrow_core::model::NodeKind::Shared,
+            fiat: None,
             seller_id: "s".into(),
             amount_sats: 1,
             description: String::new(),

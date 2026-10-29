@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
-import { MAX_DESCRIPTION, NewEscrowForm, type NodeInfo } from "@/lib/schemas";
+import { formatFiat, formatRate, valueOfSats } from "@/lib/fiat";
+import { MAX_DESCRIPTION, NewEscrowForm, type NodeInfo, type RateQuote, type RatesInfo } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
 import { Button, Card, Field, inputClass, Notice, Spinner } from "./ui";
@@ -12,18 +13,20 @@ import { Button, Card, Field, inputClass, Notice, Spinner } from "./ui";
 type Values = {
   buyer_id: string;
   arbiter_id: string;
+  fiat_currency: string;
   amount_sats: string;
   description: string;
   hold_amount: string;
   hold_unit: "minutes" | "hours";
 };
 
-const initial: Values = { buyer_id: "", arbiter_id: "", amount_sats: "", description: "", hold_amount: "1", hold_unit: "hours" };
+const initial: Values = { buyer_id: "", arbiter_id: "", fiat_currency: "", amount_sats: "", description: "", hold_amount: "1", hold_unit: "hours" };
 
 // Server error codes that belong to a particular field.
 const fieldOfCode: Record<string, keyof Values> = {
   unknown_buyer: "buyer_id",
   unknown_arbiter: "arbiter_id",
+  unsupported_currency: "fiat_currency",
   invalid_arbiter: "arbiter_id",
   arbiter_has_no_key: "arbiter_id",
   invalid_amount: "amount_sats",
@@ -42,16 +45,44 @@ export function NewEscrow() {
   // second escrow. Editing the form starts a new submission.
   const idempotencyKey = useRef<string | null>(null);
   const [node, setNode] = useState<NodeInfo | null>(null);
+  const [rates, setRates] = useState<RatesInfo | null>(null);
+  const [quote, setQuote] = useState<RateQuote | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!session || session.kind !== "user") return;
     let alive = true;
     // If this fails the server still answers "no_node" when it matters, so just carry on.
     api.node().then((n) => alive && setNode(n)).catch(() => {});
+    // Whether fiat values are offered at all. If this fails the form simply has no currency choice.
+    api.rates().then((r) => alive && setRates(r)).catch(() => {});
     return () => {
       alive = false;
     };
   }, [session]);
+
+  // The price behind the preview, refreshed every minute while a currency is chosen. The server
+  // takes its own rate when the escrow is created; this is only so people can see what to expect.
+  const currency = values.fiat_currency;
+  useEffect(() => {
+    if (!currency || !session || session.kind !== "user") return;
+    let alive = true;
+    const load = () =>
+      api
+        .rate(currency)
+        .then((q) => {
+          if (!alive) return;
+          setQuote(q);
+          setQuoteError(null);
+        })
+        .catch((err) => alive && setQuoteError(describeError(err)));
+    load();
+    const t = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [currency, session]);
 
   if (session === undefined) return <Spinner />;
   if (!session) return <SignIn note="Sign in as the seller to create an escrow." />;
@@ -164,6 +195,31 @@ export function NewEscrow() {
               placeholder="1000"
             />
           </Field>
+          {rates?.enabled && (
+            <Field
+              label="Also show the value in (optional)"
+              hint="Display only: the escrow is in sats. The value is worked out once, now, and never changes."
+              error={errors.fiat_currency}
+            >
+              <select
+                value={values.fiat_currency}
+                onChange={(e) => {
+                  setQuote(null);
+                  setQuoteError(null);
+                  set("fiat_currency", e.target.value);
+                }}
+                className={inputClass}
+              >
+                <option value="">No fiat value</option>
+                {rates.currencies.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code}
+                  </option>
+                ))}
+              </select>
+              {currency && <FiatPreview sats={values.amount_sats} quote={quote} error={quoteError} />}
+            </Field>
+          )}
           <Field
             label="Description"
             hint={`${values.description.length}/${MAX_DESCRIPTION} characters. Both parties see it.`}
@@ -185,12 +241,14 @@ export function NewEscrow() {
           >
             <div className="flex gap-2">
               <input
+                aria-label="Hold time amount"
                 value={values.hold_amount}
                 onChange={(e) => set("hold_amount", e.target.value)}
                 className={`${inputClass} max-w-32`}
                 inputMode="decimal"
               />
               <select
+                aria-label="Hold time unit"
                 value={values.hold_unit}
                 onChange={(e) => set("hold_unit", e.target.value as Values["hold_unit"])}
                 className={`${inputClass} max-w-40`}
@@ -207,5 +265,26 @@ export function NewEscrow() {
         </form>
       </Card>
     </div>
+  );
+}
+
+/** What the sum is worth now, so the seller knows what to expect. The real value is fixed on creation. */
+function FiatPreview({ sats, quote, error }: { sats: string; quote: RateQuote | null; error: string | null }) {
+  if (error) return <p className="mt-2 text-xs text-red-700 dark:text-red-400">{error}</p>;
+  if (!quote) return <p className="mt-2 text-xs text-neutral-500">Fetching the price…</p>;
+  const amount = Number(sats);
+  const valid = Number.isInteger(amount) && amount > 0 && amount <= 1_000_000;
+  return (
+    <p className="mt-2 text-sm">
+      {valid ? (
+        <>
+          <strong>≈ {formatFiat(valueOfSats(amount, quote.rate_minor_per_btc), quote.currency, quote.exponent)}</strong>{" "}
+          <span className="text-neutral-500">at</span>{" "}
+        </>
+      ) : null}
+      <span className="text-neutral-500">
+        {formatRate(quote.rate_minor_per_btc, quote.currency, quote.exponent)} per bitcoin ({quote.source})
+      </span>
+    </p>
   );
 }

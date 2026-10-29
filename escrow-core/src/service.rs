@@ -59,6 +59,8 @@ pub struct NewEscrow {
     /// The arbiter and the public key recorded for them now. Both or neither.
     pub arbiter: Option<(String, String)>,
     pub amount_sats: u64,
+    /// A display-only fiat value, already worked out by the caller.
+    pub fiat: Option<crate::fiat::FiatQuote>,
     pub description: String,
     pub deadline_at: i64,
 }
@@ -204,6 +206,7 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             arbiter_confirmed_at: None,
             node,
             amount_sats: new.amount_sats,
+            fiat: new.fiat,
             description: new.description,
             payment_hash: None,
             invoice: None,
