@@ -25,7 +25,7 @@ const escrow = await toshi.escrows.create({
 console.log(escrow.checkout_url); // send your customer here
 ```
 
-Make the API key on the web app's Account page. Keep it on your server.
+Make the API key on the web app's API page. Keep it on your server.
 
 ## The calls
 
