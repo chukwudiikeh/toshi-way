@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
-    model::{ApiKey, AuditEntry, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User},
+    model::{
+        ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, PaymentHash, User, Webhook, WebhookProgress,
+    },
     state::EscrowState,
 };
 
@@ -71,6 +73,10 @@ pub trait Store: Send + Sync {
         audit: AuditEntry,
     ) -> Result<Escrow, StoreError>;
     async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, StoreError>;
+    /// Audit entries for escrows sold by `seller_id`, with a position above `after`, oldest first.
+    async fn audit_since(&self, seller_id: &str, after: i64, limit: u32) -> Result<Vec<AuditRow>, StoreError>;
+    /// The position of the newest audit entry (0 if none), for starting a cursor "from now".
+    async fn audit_head(&self) -> Result<i64, StoreError>;
     async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError>;
     async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, StoreError>;
 }
@@ -100,6 +106,17 @@ pub trait UserStore: Send + Sync {
     /// Revoke `id` if it belongs to `user_id` and is not revoked yet. `true` if it was revoked now.
     async fn revoke_api_key(&self, user_id: &str, id: &str, at: i64) -> Result<bool, StoreError>;
     async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError>;
+    /// `Conflict` if the id already exists.
+    async fn insert_webhook(&self, hook: Webhook) -> Result<(), StoreError>;
+    async fn get_webhook(&self, id: &str) -> Result<Option<Webhook>, StoreError>;
+    /// A user's endpoints, oldest first.
+    async fn list_webhooks(&self, user_id: &str) -> Result<Vec<Webhook>, StoreError>;
+    /// `true` if `user_id` had endpoint `id` and it was deleted.
+    async fn delete_webhook(&self, user_id: &str, id: &str) -> Result<bool, StoreError>;
+    /// Endpoints that are not disabled and whose next attempt is due at `now`.
+    async fn due_webhooks(&self, now: i64, limit: u32) -> Result<Vec<Webhook>, StoreError>;
+    /// Record how a delivery attempt went. Does nothing if the endpoint is gone.
+    async fn record_webhook_progress(&self, id: &str, progress: WebhookProgress) -> Result<(), StoreError>;
 }
 
 #[derive(Default)]
@@ -116,6 +133,7 @@ struct MemoryInner {
     node_connections: Vec<NodeConnection>,
     arbiter_keys: Vec<(String, String)>,
     api_keys: Vec<(ApiKey, String)>,
+    webhooks: Vec<Webhook>,
 }
 
 impl MemoryStore {
@@ -269,6 +287,23 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    async fn audit_since(&self, seller_id: &str, after: i64, limit: u32) -> Result<Vec<AuditRow>, StoreError> {
+        let g = self.inner.lock().unwrap();
+        // The log is a Vec, so an entry's position is its index plus one.
+        Ok(g.audit
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| AuditRow { seq: i as i64 + 1, entry: entry.clone() })
+            .filter(|row| row.seq > after)
+            .filter(|row| g.escrows.iter().any(|e| e.id == row.entry.escrow_id && e.seller_id == seller_id))
+            .take(limit as usize)
+            .collect())
+    }
+
+    async fn audit_head(&self) -> Result<i64, StoreError> {
+        Ok(self.inner.lock().unwrap().audit.len() as i64)
+    }
+
     async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError> {
         self.inner.lock().unwrap().node_events.push(event);
         Ok(())
@@ -319,6 +354,12 @@ impl<S: Store + ?Sized> Store for std::sync::Arc<S> {
     }
     async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, StoreError> {
         (**self).audit_log(id).await
+    }
+    async fn audit_since(&self, seller_id: &str, after: i64, limit: u32) -> Result<Vec<AuditRow>, StoreError> {
+        (**self).audit_since(seller_id, after, limit).await
+    }
+    async fn audit_head(&self) -> Result<i64, StoreError> {
+        (**self).audit_head().await
     }
     async fn record_node_event(&self, event: NodeEventRecord) -> Result<(), StoreError> {
         (**self).record_node_event(event).await
@@ -413,6 +454,61 @@ impl UserStore for MemoryStore {
         }
         Ok(())
     }
+
+    async fn insert_webhook(&self, hook: Webhook) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        if g.webhooks.iter().any(|h| h.id == hook.id) {
+            return Err(StoreError::Conflict);
+        }
+        g.webhooks.push(hook);
+        Ok(())
+    }
+
+    async fn get_webhook(&self, id: &str) -> Result<Option<Webhook>, StoreError> {
+        Ok(self.inner.lock().unwrap().webhooks.iter().find(|h| h.id == id).cloned())
+    }
+
+    async fn list_webhooks(&self, user_id: &str) -> Result<Vec<Webhook>, StoreError> {
+        let mut list: Vec<Webhook> =
+            self.inner.lock().unwrap().webhooks.iter().filter(|h| h.user_id == user_id).cloned().collect();
+        list.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(list)
+    }
+
+    async fn delete_webhook(&self, user_id: &str, id: &str) -> Result<bool, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        let before = g.webhooks.len();
+        g.webhooks.retain(|h| !(h.id == id && h.user_id == user_id));
+        Ok(g.webhooks.len() != before)
+    }
+
+    async fn due_webhooks(&self, now: i64, limit: u32) -> Result<Vec<Webhook>, StoreError> {
+        let mut list: Vec<Webhook> = self
+            .inner
+            .lock()
+            .unwrap()
+            .webhooks
+            .iter()
+            .filter(|h| h.disabled_at.is_none() && h.next_attempt_at <= now)
+            .cloned()
+            .collect();
+        list.sort_by(|a, b| a.next_attempt_at.cmp(&b.next_attempt_at).then_with(|| a.id.cmp(&b.id)));
+        list.truncate(limit as usize);
+        Ok(list)
+    }
+
+    async fn record_webhook_progress(&self, id: &str, p: WebhookProgress) -> Result<(), StoreError> {
+        if let Some(h) = self.inner.lock().unwrap().webhooks.iter_mut().find(|h| h.id == id) {
+            h.last_seq = p.last_seq;
+            h.attempts = p.attempts;
+            h.next_attempt_at = p.next_attempt_at;
+            h.failing_since = p.failing_since;
+            h.disabled_at = p.disabled_at;
+            h.last_attempt_at = p.last_attempt_at;
+            h.last_status = p.last_status;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -455,5 +551,23 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
     }
     async fn touch_api_key(&self, id: &str, at: i64) -> Result<(), StoreError> {
         (**self).touch_api_key(id, at).await
+    }
+    async fn insert_webhook(&self, hook: Webhook) -> Result<(), StoreError> {
+        (**self).insert_webhook(hook).await
+    }
+    async fn get_webhook(&self, id: &str) -> Result<Option<Webhook>, StoreError> {
+        (**self).get_webhook(id).await
+    }
+    async fn list_webhooks(&self, user_id: &str) -> Result<Vec<Webhook>, StoreError> {
+        (**self).list_webhooks(user_id).await
+    }
+    async fn delete_webhook(&self, user_id: &str, id: &str) -> Result<bool, StoreError> {
+        (**self).delete_webhook(user_id, id).await
+    }
+    async fn due_webhooks(&self, now: i64, limit: u32) -> Result<Vec<Webhook>, StoreError> {
+        (**self).due_webhooks(now, limit).await
+    }
+    async fn record_webhook_progress(&self, id: &str, progress: WebhookProgress) -> Result<(), StoreError> {
+        (**self).record_webhook_progress(id, progress).await
     }
 }
