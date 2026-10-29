@@ -5,6 +5,7 @@
 //! in-memory implementation for tests.
 
 pub mod adapter;
+pub mod fiat;
 pub mod mock;
 pub mod model;
 pub mod service;

@@ -7,6 +7,7 @@ pub mod arbiter;
 pub mod auth;
 pub mod error;
 pub mod ratelimit;
+pub mod rates;
 pub mod routes;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
@@ -77,6 +78,8 @@ pub struct AppState<A, S> {
     /// Changing a seller's node must not interleave with creating an invoice on it: invoice
     /// creation holds this for reading, a node change for writing.
     pub(crate) node_changes: Arc<tokio::sync::RwLock<()>>,
+    /// Where display-only fiat values come from. Off unless configured.
+    pub(crate) rates: Arc<dyn rates::RateProvider>,
 }
 
 impl<A, S: Clone> Clone for AppState<A, S> {
@@ -89,6 +92,7 @@ impl<A, S: Clone> Clone for AppState<A, S> {
             limiter: self.limiter.clone(),
             idempotency: self.idempotency.clone(),
             node_changes: self.node_changes.clone(),
+            rates: self.rates.clone(),
         }
     }
 }
@@ -103,7 +107,14 @@ impl<A, S: Clone> AppState<A, S> {
             limiter: Arc::new(RateLimiter::default()),
             idempotency: Arc::new(IdempotencyCache::default()),
             node_changes: Arc::new(tokio::sync::RwLock::new(())),
+            rates: Arc::new(rates::Disabled),
         }
+    }
+
+    /// Use `rates` for display-only fiat values (the default is none).
+    pub fn with_rates(mut self, rates: Arc<dyn rates::RateProvider>) -> Self {
+        self.rates = rates;
+        self
     }
 }
 
@@ -170,6 +181,8 @@ where
         .route("/health", get(routes::health::<A, S>))
         .route("/api/v1/users", post(routes::register::<A, S>))
         .route("/api/v1/me", get(routes::me))
+        .route("/api/v1/rates", get(routes::rates_list::<A, S>))
+        .route("/api/v1/rates/{currency}", get(routes::rates_one::<A, S>))
         .route(
             "/api/v1/me/arbiter-key",
             get(routes::arbiter_key_get::<A, S>).put(routes::arbiter_key_put::<A, S>),
