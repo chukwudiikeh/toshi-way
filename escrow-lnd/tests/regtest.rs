@@ -145,7 +145,7 @@ async fn service() -> (Arc<Svc>, LndAdapter) {
 
 fn offer(hold_secs: i64) -> NewEscrow {
     NewEscrow {
-        buyer_id: "buyer".into(),
+        buyer_id: Some("buyer".into()),
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "regtest escrow".into(),

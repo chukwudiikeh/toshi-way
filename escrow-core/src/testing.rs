@@ -10,7 +10,7 @@ use crate::{
 fn escrow(id: &str) -> Escrow {
     Escrow {
         id: id.into(),
-        buyer_id: "buyer".into(),
+        buyer_id: Some("buyer".into()),
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "parcel".into(),
@@ -49,6 +49,7 @@ pub async fn store_contract(store: &dyn Store) {
     // A transition applies its update and appends its audit entry together.
     let hash = [7u8; 32];
     let update = EscrowUpdate {
+        buyer_id: None,
         payment_hash: Some(hash),
         invoice: Some("lnbcrt1abc".into()),
         invoice_expires_at: Some(700),
@@ -106,13 +107,32 @@ pub async fn store_contract(store: &dyn Store) {
     // Per-user listing: parties only, newest first, ties by id.
     let mut newer = escrow("c");
     newer.created_at = 200;
-    newer.buyer_id = "someone-else".into();
+    newer.buyer_id = Some("someone-else".into());
     store.insert(newer).await.unwrap();
     let ids = |v: Vec<Escrow>| v.into_iter().map(|e| e.id).collect::<Vec<_>>();
     assert_eq!(ids(store.list_for_user("buyer").await.unwrap()), ["a", "b"]);
     assert_eq!(ids(store.list_for_user("seller").await.unwrap()), ["c", "a", "b"]);
     assert_eq!(ids(store.list_for_user("someone-else").await.unwrap()), ["c"]);
     assert!(store.list_for_user("nobody").await.unwrap().is_empty());
+
+    // An open offer has no buyer until someone accepts; the claim is applied with the transition
+    // and an update without a buyer leaves it alone.
+    let mut open = escrow("open");
+    open.buyer_id = None;
+    open.created_at = 50;
+    store.insert(open).await.unwrap();
+    assert_eq!(store.get("open").await.unwrap().unwrap().buyer_id, None);
+    assert!(store.list_for_user("claimer").await.unwrap().is_empty());
+    let claim = EscrowUpdate { buyer_id: Some("claimer".into()), ..Default::default() };
+    let claimed = store.transition("open", Created, claim, audit("open", Created, InvoiceIssued, 60)).await.unwrap();
+    assert_eq!(claimed.buyer_id.as_deref(), Some("claimer"));
+    assert_eq!(ids(store.list_for_user("claimer").await.unwrap()), ["open"]);
+    let after = store
+        .transition("open", InvoiceIssued, EscrowUpdate::default(), audit("open", InvoiceIssued, Locked, 70))
+        .await
+        .unwrap();
+    assert_eq!(after.buyer_id.as_deref(), Some("claimer"), "later updates keep the buyer");
+    // The active-listing and audit assertions above ran before this, so leave the rest unchanged.
 
     // Node events are kept per escrow, in order.
     for (state, at) in [(NodeInvoiceState::Accepted, 310), (NodeInvoiceState::Settled, 320)] {

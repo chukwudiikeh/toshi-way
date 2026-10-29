@@ -24,6 +24,8 @@ pub enum StoreError {
 /// What a transition changes besides the state itself.
 #[derive(Debug, Clone, Default)]
 pub struct EscrowUpdate {
+    /// Set when the first user to accept an open offer becomes its buyer.
+    pub buyer_id: Option<String>,
     pub payment_hash: Option<PaymentHash>,
     pub invoice: Option<String>,
     pub invoice_expires_at: Option<i64>,
@@ -125,7 +127,7 @@ impl Store for MemoryStore {
             .unwrap()
             .escrows
             .iter()
-            .filter(|e| e.buyer_id == user_id || e.seller_id == user_id)
+            .filter(|e| e.buyer_id.as_deref() == Some(user_id) || e.seller_id == user_id)
             .cloned()
             .collect();
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
@@ -147,6 +149,9 @@ impl Store for MemoryStore {
         }
         e.state = audit.to_state;
         e.updated_at = audit.created_at;
+        if update.buyer_id.is_some() {
+            e.buyer_id = update.buyer_id;
+        }
         if update.payment_hash.is_some() {
             e.payment_hash = update.payment_hash;
         }

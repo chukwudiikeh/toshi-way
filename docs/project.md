@@ -79,7 +79,7 @@ In Mode A nobody holds the funds, but the seller's node sees `P` at settlement a
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/api/v1/escrows` | Create an escrow offer |
+| POST | `/api/v1/escrows` | Create an escrow offer (`buyer_id` optional: omit it for an open offer) |
 | GET | `/api/v1/escrows/:id` | Details and state |
 | POST | `/api/v1/escrows/:id/accept` | Buyer accepts and submits `H` |
 | GET | `/api/v1/escrows/:id/invoice` | Hold invoice to pay |
@@ -143,6 +143,7 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] `server_time` on `/health` for client clock-skew correction
 - [x] Hardening 1: `CREATED` offers can be withdrawn (seller, operator) or declined (buyer) and lapse at their deadline; `GET /api/v1/me`
 - [x] Hardening 2: restricted invoice-only macaroon (`regtest/creds/seller/toshi.macaroon`, now the server default), restart test on the real node
+- [x] Hardening 3: SQLite schema migrations (`PRAGMA user_version`), open-offer links (no buyer id needed; the first user to accept becomes the buyer)
 - [ ] Demo rehearsal and choosing the lead use case
 
 ## Open questions

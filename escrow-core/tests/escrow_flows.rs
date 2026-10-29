@@ -35,7 +35,7 @@ fn secret(n: u8) -> Preimage {
 
 fn offer(deadline_at: i64) -> NewEscrow {
     NewEscrow {
-        buyer_id: "buyer".into(),
+        buyer_id: Some("buyer".into()),
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "deliver the parcel".into(),
@@ -343,7 +343,7 @@ async fn creation_validates_amount_parties_and_deadline() {
     assert!(matches!(f.svc.create(bad, T0).await, Err(ServiceError::Invalid(_))));
 
     let mut bad = offer(T0 + HOUR);
-    bad.seller_id = bad.buyer_id.clone();
+    bad.seller_id = bad.buyer_id.clone().unwrap();
     assert!(matches!(f.svc.create(bad, T0).await, Err(ServiceError::Invalid(_))));
 
     let err = f.svc.create(offer(T0 + 7 * HOUR), T0).await.unwrap_err();
@@ -389,4 +389,32 @@ async fn node_events_are_recorded_for_the_audit_trail() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].node_invoice_state, NodeInvoiceState::Accepted);
     assert_eq!(events[0].received_at, T0 + 5);
+}
+
+#[tokio::test]
+async fn the_first_user_to_accept_an_open_offer_becomes_its_buyer() {
+    let f = fixture();
+    let open = NewEscrow { buyer_id: None, ..offer(T0 + HOUR) };
+    let e = f.svc.create(open, T0).await.unwrap();
+    assert_eq!(e.buyer_id, None);
+
+    // The seller cannot be the buyer of their own offer.
+    assert!(matches!(f.svc.accept(&e.id, secret(1).hash(), "seller", T0).await, Err(ServiceError::Invalid(_))));
+    assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Created);
+
+    let e = f.svc.accept(&e.id, secret(1).hash(), "alice", T0).await.unwrap();
+    assert_eq!((e.state, e.buyer_id.as_deref()), (EscrowState::InvoiceIssued, Some("alice")));
+
+    // Alice repeating it is fine; someone else is turned away and nothing changes.
+    f.svc.accept(&e.id, secret(1).hash(), "alice", T0).await.unwrap();
+    assert!(matches!(f.svc.accept(&e.id, secret(2).hash(), "bob", T0).await, Err(ServiceError::Invalid(_))));
+    assert_eq!(f.svc.get(&e.id).await.unwrap().buyer_id.as_deref(), Some("alice"));
+}
+
+#[tokio::test]
+async fn a_named_buyer_cannot_be_replaced_by_someone_else_accepting() {
+    let f = fixture();
+    let e = f.svc.create(offer(T0 + HOUR), T0).await.unwrap();
+    assert!(matches!(f.svc.accept(&e.id, secret(1).hash(), "mallory", T0).await, Err(ServiceError::Invalid(_))));
+    assert_eq!(f.node.state(&secret(1).hash()), None, "no invoice was issued");
 }
