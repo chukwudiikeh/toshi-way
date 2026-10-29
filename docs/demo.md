@@ -20,7 +20,7 @@ Why delivery: the recipient has to be physically present at the handover, which 
 ./scripts/demo-env.sh refresh   # right before going on: keeps the Lightning node reporting "synced"
 ```
 
-`up` takes about 25 seconds and is safe to run again. It prints the app URL, the operator token, and creates three accounts, saved with their tokens in `.demo/accounts.json`:
+`up` takes about 25 seconds and is safe to run again. In a Codespace it also prints the address to open in your browser (port 3001). It prints the app URL, the operator token, and creates three accounts, saved with their tokens in `.demo/accounts.json`:
 
 | Who | Role | Notes |
 |---|---|---|
