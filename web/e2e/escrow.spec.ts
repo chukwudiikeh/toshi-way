@@ -660,7 +660,8 @@ test("password vault: lock and unlock, wrong password, new device import, remove
   await importToken(other, user.token, "another long password here");
   await expect(other.getByRole("heading", { name: "My escrows" })).toBeVisible();
 
-  // Remove from this device: only the token gets back in.
+  // Remove from this device (on the Profile tab): only the token gets back in.
+  await page.getByRole("tab", { name: "Profile" }).click();
   await page.getByRole("button", { name: "Remove from this device" }).click();
   await page.getByRole("button", { name: "Remove from this device" }).last().click();
   await expect(page.getByLabel("Token", { exact: true })).toBeVisible();
