@@ -20,8 +20,11 @@ materialize() {
 materialize LND_TLS_CERT_B64 tls.cert LND_TLS_CERT
 materialize LND_MACAROON_B64 invoice.macaroon LND_MACAROON
 materialize PAYOUT_MACAROON_B64 payout.macaroon PAYOUT_MACAROON
+# The demo naira provider's own node (test networks only): the "bank" that pays escrows and receives cash-outs.
+materialize RAMP_LND_TLS_CERT_B64 ramp-tls.cert RAMP_LND_TLS_CERT
+materialize RAMP_LND_MACAROON_B64 ramp.macaroon RAMP_LND_MACAROON
 
 # The server no longer needs the encoded copies; keep them out of its environment.
-unset LND_TLS_CERT_B64 LND_MACAROON_B64 PAYOUT_MACAROON_B64
+unset LND_TLS_CERT_B64 LND_MACAROON_B64 PAYOUT_MACAROON_B64 RAMP_LND_TLS_CERT_B64 RAMP_LND_MACAROON_B64
 
 exec /usr/local/bin/toshi-server

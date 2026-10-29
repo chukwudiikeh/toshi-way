@@ -449,7 +449,15 @@ pub const NIGERIAN_BANKS: &[Bank] = &[
     Bank { code: "057", name: "Zenith Bank" },
 ];
 
-/// A stand-in provider for regtest. Its Lightning side is real (a node of the test network pays and
+/// Whether the demo provider may run on a node on `network` (as LND names it). It takes "I have sent
+/// the transfer" on trust and pays with the node's own sats, so it must only ever run where the coins
+/// are worthless: an allow-list of test networks, so a new or unknown name is refused, and mainnet is
+/// refused by being absent.
+pub fn demo_provider_allowed_on(network: &str) -> bool {
+    matches!(network, "regtest" | "simnet" | "signet" | "testnet" | "testnet4")
+}
+
+/// A stand-in provider for test networks. Its Lightning side is real (a node of the test network pays and
 /// receives); its bank side is pretend: transfers "arrive" when the app says so, and payouts and
 /// refunds succeed at once with a made-up reference. Everything it shows is labelled as a demo.
 pub struct DemoRamp {
@@ -527,3 +535,20 @@ impl RampProvider for DemoRamp {
         Ok(format!("DEMO-{}-{}", purpose.as_str().to_uppercase(), short(&order.id)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::demo_provider_allowed_on;
+
+    #[test]
+    fn the_demo_provider_runs_only_where_coins_are_worthless() {
+        for ok in ["regtest", "simnet", "signet", "testnet", "testnet4"] {
+            assert!(demo_provider_allowed_on(ok), "{ok}");
+        }
+        // Mainnet is refused, and so is anything unknown, empty or oddly cased: the list is an allow-list.
+        for bad in ["mainnet", "Mainnet", "bitcoin", "", "regtest ", "SIGNET", "liquid", "testnet5"] {
+            assert!(!demo_provider_allowed_on(bad), "{bad:?}");
+        }
+    }
+}
+

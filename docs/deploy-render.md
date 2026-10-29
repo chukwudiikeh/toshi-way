@@ -2,7 +2,7 @@
 
 A step-by-step guide to putting the API server, the web app and the database on [Render](https://render.com), and connecting them to a Lightning node you run or rent elsewhere. Written for the person doing the deploy. For how the system works, see [`architecture.md`](architecture.md).
 
-**Do the whole thing on a public test network first** (signet). It costs nothing, and it is the only way to find the mistakes that would otherwise cost money.
+**Do the whole thing on a public test network first** (signet). It costs nothing, and it is the only way to find the mistakes that would otherwise cost money. [`signet-dry-run.md`](signet-dry-run.md) is the guide for that.
 
 ## What goes where
 
