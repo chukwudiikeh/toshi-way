@@ -7,6 +7,7 @@
 //!   LND_ADDR         default https://localhost:10003
 //!   LND_TLS_CERT     path to tls.cert
 //!   LND_MACAROON     path to a macaroon limited to invoice operations
+//!   CORS_ORIGINS     comma-separated browser origins (default http://localhost:3001,http://127.0.0.1:3001)
 //!   RUST_LOG         log filter (default info)
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -56,7 +57,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(EscrowService::new(lnd.clone(), store.clone(), TimingConfig::default()));
     ensure_operator(&store, &operator_token, runner::unix_now()).await.map_err(|e| e.message)?;
 
-    let state = AppState::new(service.clone(), store, ApiConfig::default(), Arc::new(runner::unix_now));
+    let config = ApiConfig {
+        cors_origins: env("CORS_ORIGINS", Some("http://localhost:3001,http://127.0.0.1:3001"))
+            .split(',')
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty())
+            .collect(),
+        ..ApiConfig::default()
+    };
+    let state = AppState::new(service.clone(), store, config, Arc::new(runner::unix_now));
     let app = router(state);
 
     // Keep escrows in step with the node, and cancel holds at their deadline.

@@ -104,6 +104,10 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         Ok(self.store.list_active().await?)
     }
 
+    pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, ServiceError> {
+        Ok(self.store.list_for_user(user_id).await?)
+    }
+
     pub async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, ServiceError> {
         Ok(self.store.node_events(id).await?)
     }

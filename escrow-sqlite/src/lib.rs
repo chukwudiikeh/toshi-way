@@ -169,6 +169,18 @@ impl Store for SqliteStore {
         rows.iter().map(escrow_from_row).collect()
     }
 
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {ESCROW_COLUMNS} FROM escrows WHERE buyer_id = ?1 OR seller_id = ?1 \
+             ORDER BY created_at DESC, id ASC LIMIT 100"
+        ))
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(escrow_from_row).collect()
+    }
+
     async fn transition(
         &self,
         id: &str,

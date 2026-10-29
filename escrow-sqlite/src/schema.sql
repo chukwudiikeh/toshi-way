@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS escrows (
     updated_at         INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS escrows_buyer ON escrows(buyer_id, created_at);
+CREATE INDEX IF NOT EXISTS escrows_seller ON escrows(seller_id, created_at);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     escrow_id  TEXT    NOT NULL REFERENCES escrows(id),

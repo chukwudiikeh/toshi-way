@@ -512,3 +512,78 @@ async fn every_response_carries_a_request_id_and_bodies_are_size_limited() {
     let (s, _) = app.call(Method::POST, "/api/v1/escrows", Some(&seller.token), Some(huge)).await;
     assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn cors_allows_only_configured_origins_and_skips_auth_for_preflight() {
+    let app = app_with(ApiConfig {
+        rate_limit_per_min: 100_000,
+        register_limit_per_min: 100_000,
+        cors_origins: vec!["http://localhost:3001".into()],
+        ..Default::default()
+    })
+    .await;
+    let preflight = |origin: &str| {
+        Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/v1/escrows")
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "authorization,content-type,idempotency-key")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let ok = app.router.clone().oneshot(preflight("http://localhost:3001")).await.unwrap();
+    assert!(ok.status().is_success(), "preflight needs no token: {}", ok.status());
+    assert_eq!(ok.headers()["access-control-allow-origin"], "http://localhost:3001");
+    let allowed = ok.headers()["access-control-allow-headers"].to_str().unwrap().to_lowercase();
+    assert!(allowed.contains("authorization") && allowed.contains("idempotency-key"));
+
+    let bad = app.router.clone().oneshot(preflight("http://evil.example")).await.unwrap();
+    assert!(bad.headers().get("access-control-allow-origin").is_none());
+
+    // Real responses carry the header too, and expose the request id to the page.
+    let req = Request::builder()
+        .uri("/health")
+        .header("origin", "http://localhost:3001")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.headers()["access-control-allow-origin"], "http://localhost:3001");
+    assert!(res.headers()["access-control-expose-headers"].to_str().unwrap().contains("x-request-id"));
+}
+
+#[tokio::test]
+async fn users_can_list_their_own_escrows_and_only_those() {
+    let app = app().await;
+    let (seller, buyer, other) = (app.register().await, app.register().await, app.register().await);
+    let one = app.create(&seller, &buyer, 3600).await;
+    app.clock.store(T0 + 5, Ordering::SeqCst);
+    let two = app.create(&seller, &buyer, 3600).await;
+    let _unrelated = app.create(&other, &seller, 3600).await;
+
+    let (s, v) = app.call(Method::GET, "/api/v1/escrows", Some(&buyer.token), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<_> = v["escrows"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [two.as_str(), one.as_str()], "newest first");
+    assert!(v["escrows"].as_array().unwrap().iter().all(|e| e["your_role"] == "buyer"));
+
+    let (_, v) = app.call(Method::GET, "/api/v1/escrows", Some(&seller.token), None).await;
+    let roles: Vec<_> = v["escrows"].as_array().unwrap().iter().map(|e| e["your_role"].as_str().unwrap()).collect();
+    assert_eq!(roles.len(), 3);
+    assert_eq!(roles.iter().filter(|r| **r == "seller").count(), 2);
+
+    let (_, v) = app.call(Method::GET, "/api/v1/escrows", Some(OPERATOR_TOKEN), None).await;
+    assert!(v["escrows"].as_array().unwrap().is_empty(), "operators use the operator queue");
+    assert_eq!(app.call(Method::GET, "/api/v1/escrows", None, None).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_view_exposes_invoice_expiry_for_countdowns() {
+    let app = app().await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    let id = app.create(&seller, &buyer, 3600).await;
+    app.accept(&buyer, &id, &secret(1)).await;
+    let (_, v) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&buyer.token), None).await;
+    assert_eq!(v["invoice_expires_at"], T0 + 600);
+}

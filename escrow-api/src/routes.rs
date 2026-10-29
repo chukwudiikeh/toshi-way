@@ -54,6 +54,7 @@ fn escrow_view(e: &Escrow, party: Party) -> Value {
         "description": e.description,
         "payment_hash": e.payment_hash.map(hex::encode),
         "state": e.state.as_str(),
+        "invoice_expires_at": e.invoice_expires_at,
         "deadline_at": e.deadline_at,
         "created_at": e.created_at,
         "updated_at": e.updated_at,
@@ -183,6 +184,25 @@ where
         cache.insert((user.id, key), (body_hash, view.clone()));
     }
     Ok((StatusCode::CREATED, Json(view)))
+}
+
+/// The caller's own escrows, as buyer or seller.
+pub async fn list_mine<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+) -> Result<Json<Value>, ApiError>
+where
+    A: LightningAdapter + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let list: Vec<Value> = st
+        .service
+        .list_for_user(&user.id)
+        .await?
+        .iter()
+        .filter_map(|e| party_of(e, &user).map(|p| escrow_view(e, p)))
+        .collect();
+    Ok(Json(json!({ "escrows": list })))
 }
 
 pub async fn get_escrow<A, S>(
