@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
 import {
   changePassword,
   lock,
@@ -12,54 +12,91 @@ import {
 } from "@/lib/session";
 import { VaultError } from "@/lib/vault";
 import { SignIn } from "./Account";
-import { ApiKeysCard } from "./ApiKeysCard";
 import { BackupCard } from "./BackupCard";
-import { WebhooksCard } from "./WebhooksCard";
 import { NewPasswordFields, useNewPassword } from "./PasswordFields";
 import { Button, Card, ConfirmButton, CopyField, Field, inputClass, Notice } from "./ui";
+
+const tabs = [
+  { id: "profile", label: "Profile" },
+  { id: "security", label: "Security" },
+  { id: "backup", label: "Backup" },
+] as const;
+type Tab = (typeof tabs)[number]["id"];
+
+const subscribeHash = (cb: () => void) => {
+  window.addEventListener("hashchange", cb);
+  return () => window.removeEventListener("hashchange", cb);
+};
+
+/** The tab comes from the URL's #fragment, so /account#backup opens the backup tab and can be linked to. */
+function useTab(): Tab {
+  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash.slice(1), () => "");
+  return tabs.find((t) => t.id === hash)?.id ?? "profile";
+}
 
 /** Where a person manages how their account is kept on this device. */
 export function AccountPage() {
   const session = useSession();
   const state = useVaultState();
+  const tab = useTab();
   if (session === undefined) return null;
   if (!session) return <SignIn />;
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto w-full max-w-2xl space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Account</h1>
-      <Card title="Your account">
-        <div className="space-y-3">
-          {session.userId && (
-            <div className="space-y-1">
-              <div className="text-sm font-medium">User id</div>
-              <CopyField value={session.userId} />
-            </div>
-          )}
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">
-            {state === "unprotected"
-              ? "This account is saved on this device without a password. Add one below."
-              : "Your account is protected by a password on this device."}
-          </p>
-        </div>
-      </Card>
-      {state === "unprotected" ? <AddPassword /> : <ProtectedTools />}
-      {session.kind === "user" && <ApiKeysCard />}
-      {session.kind === "user" && <WebhooksCard />}
-      <BackupCard />
-      <Card title="This device">
-        <div className="flex flex-wrap items-start gap-3">
-          {state !== "unprotected" && <Button variant="secondary" onClick={lock}>Lock now</Button>}
-          <ConfirmButton
-            variant="danger"
-            confirmLabel="Remove from this device"
-            confirmText="This removes your account from this device. You can only get back in with your token, so make sure you have it saved."
-            onConfirm={removeVault}
+      <div role="tablist" aria-label="Account sections" className="grid grid-cols-3 gap-1 rounded-xl bg-neutral-100 p-1 dark:bg-neutral-800">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => {
+              window.location.hash = t.id;
+            }}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+              tab === t.id ? "bg-white shadow-sm dark:bg-neutral-950" : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+            }`}
           >
-            Remove from this device
-          </ConfirmButton>
-        </div>
-      </Card>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "profile" && (
+        <>
+          <Card title="Your account">
+            <div className="space-y-3">
+              {session.userId && (
+                <div className="space-y-1">
+                  <div className="text-sm font-medium">User id</div>
+                  <CopyField value={session.userId} />
+                </div>
+              )}
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                {state === "unprotected"
+                  ? "This account is saved on this device without a password. Add one under Security."
+                  : "Your account is protected by a password on this device."}
+              </p>
+            </div>
+          </Card>
+          <Card title="This device">
+            <div className="flex flex-wrap items-start gap-3">
+              {state !== "unprotected" && <Button variant="secondary" onClick={lock}>Lock now</Button>}
+              <ConfirmButton
+                variant="danger"
+                confirmLabel="Remove from this device"
+                confirmText="This removes your account from this device. You can only get back in with your token, so make sure you have it saved."
+                onConfirm={removeVault}
+              >
+                Remove from this device
+              </ConfirmButton>
+            </div>
+          </Card>
+        </>
+      )}
+      {tab === "security" && (state === "unprotected" ? <AddPassword /> : <ProtectedTools />)}
+      {tab === "backup" && <BackupCard />}
     </div>
   );
 }

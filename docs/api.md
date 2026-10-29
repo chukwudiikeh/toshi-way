@@ -31,7 +31,7 @@ If the customer never pays, or never releases, the escrow ends by itself at the 
 
 ## Quick start
 
-1. **Make an API key.** Sign in to the web app, open **Account**, and under **API keys** make a key with both scopes. Copy it: it is shown once.
+1. **Make an API key.** Sign in to the web app, open **API** in the sidebar, and under **API keys** make a key with both scopes. Copy it: it is shown once.
 2. **Make an offer** from your server:
 
 ```js
@@ -51,7 +51,7 @@ const escrow = await toshi.escrows.create({
 // 3. Send your customer to escrow.checkout_url
 ```
 
-4. **Add a webhook** (Account, then **Webhooks**) so your server hears about every change. See [Webhooks](#webhooks).
+4. **Add a webhook** (**API** in the sidebar, then **Webhooks**) so your server hears about every change. See [Webhooks](#webhooks).
 
 ## Authentication
 
@@ -61,7 +61,7 @@ Send your API key as a bearer token on every request:
 Authorization: Bearer tk_...
 ```
 
-A key is a narrow, revocable credential for your software. Make and revoke keys on the Account page; the key is shown once and only its hash is stored. Each key has scopes:
+A key is a narrow, revocable credential for your software. Make and revoke keys on the API page; the key is shown once and only its hash is stored. Each key has scopes:
 
 | Scope | Lets the key |
 |---|---|
@@ -188,7 +188,7 @@ If you gave a `return_url`, the page shows a **"Return to your-shop.example.com"
 
 ## Webhooks
 
-Webhooks tell your server the moment an escrow changes, so you do not have to poll. Add an address on the Account page under **Webhooks** (or `POST /api/v1/me/webhooks`, with your account token, not an API key). The address must be `https://` and reachable from the internet. You get a **signing secret** (`whsec_...`) shown once. Use **Send test** to check the connection and your signature code before real events flow.
+Webhooks tell your server the moment an escrow changes, so you do not have to poll. Add an address on the API page under **Webhooks** (or `POST /api/v1/me/webhooks`, with your account token, not an API key). The address must be `https://` and reachable from the internet. You get a **signing secret** (`whsec_...`) shown once. Use **Send test** to check the connection and your signature code before real events flow.
 
 Only changes from the moment you add an address are sent, only for escrows you sell.
 
@@ -286,7 +286,7 @@ To test your code, the signature of the body `{"id":"evt_1"}` at `t=1700000000` 
 
 - Any `2xx` answer means delivered. Answer quickly (within 10 seconds) and do the real work afterwards.
 - Anything else (another status, no answer in 10 seconds, a refused connection) counts as a failure. We retry the **same event** after 10 seconds, 30 seconds, 2 minutes, 10 minutes, 30 minutes, then every hour. Later events wait behind it, so events always arrive in order and none are skipped.
-- After **3 days** of failures the address is switched off and the Account page says so. Delete it and add it again once your server is back.
+- After **3 days** of failures the address is switched off and the API page says so. Delete it and add it again once your server is back.
 - Redirects are not followed, and we only call public `https://` addresses.
 - Delivery is **at least once**. The same event can arrive twice (for example if your `200` was lost). Use `Toshi-Event-Id` to ignore repeats.
 

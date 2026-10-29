@@ -92,3 +92,8 @@ export const WalletIcon = (p: P) => (
     <path d="M16 13.5h.01" />
   </Icon>
 );
+export const CodeIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-12-2 14" />
+  </Icon>
+);
