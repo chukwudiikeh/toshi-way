@@ -12,6 +12,7 @@ import {
 } from "@/lib/session";
 import { VaultError } from "@/lib/vault";
 import { SignIn } from "./Account";
+import { BackupCard } from "./BackupCard";
 import { NewPasswordFields, useNewPassword } from "./PasswordFields";
 import { Button, Card, ConfirmButton, CopyField, Field, inputClass, Notice } from "./ui";
 
@@ -41,6 +42,7 @@ export function AccountPage() {
         </div>
       </Card>
       {state === "unprotected" ? <AddPassword /> : <ProtectedTools />}
+      <BackupCard />
       <Card title="This device">
         <div className="flex flex-wrap items-start gap-3">
           {state !== "unprotected" && <Button variant="secondary" onClick={lock}>Lock now</Button>}
