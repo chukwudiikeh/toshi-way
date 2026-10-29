@@ -61,6 +61,10 @@ pub struct NewEscrow {
     pub amount_sats: u64,
     /// A display-only fiat value, already worked out by the caller.
     pub fiat: Option<crate::fiat::FiatQuote>,
+    /// The seller's own order number, if any. See [`Escrow::reference`].
+    pub reference: Option<String>,
+    /// A link back for the buyer, if any. See [`Escrow::return_url`].
+    pub return_url: Option<String>,
     pub description: String,
     pub deadline_at: i64,
 }
@@ -211,6 +215,8 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             node,
             amount_sats: new.amount_sats,
             fiat: new.fiat,
+            reference: new.reference,
+            return_url: new.return_url,
             description: new.description,
             payment_hash: None,
             invoice: None,

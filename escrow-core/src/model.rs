@@ -118,6 +118,12 @@ pub struct Escrow {
     /// What the sum was worth in a fiat currency when the offer was made. Display only: nothing in
     /// the escrow logic reads it, and it never changes after creation.
     pub fiat: Option<FiatQuote>,
+    /// The seller's own order number (or any label), so a business can match this escrow to its
+    /// own records. Opaque to the service and set at creation.
+    pub reference: Option<String>,
+    /// Where the buyer is offered a link back to, for a business's checkout. Shown as a link the
+    /// buyer chooses to follow, never followed automatically. Set at creation.
+    pub return_url: Option<String>,
     pub description: String,
     pub payment_hash: Option<PaymentHash>,
     /// The BOLT11 string the buyer pays. Not for ordinary logs or public responses.

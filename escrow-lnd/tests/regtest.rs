@@ -149,6 +149,8 @@ fn offer(hold_secs: i64) -> NewEscrow {
         buyer_id: Some("buyer".into()),
         arbiter: None,
         fiat: None,
+        reference: None,
+        return_url: None,
         seller_id: "seller".into(),
         amount_sats: 1000,
         description: "regtest escrow".into(),

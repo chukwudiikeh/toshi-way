@@ -23,11 +23,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/004_arbitration.sql"),
     include_str!("migrations/005_fiat.sql"),
     include_str!("migrations/006_api_keys.sql"),
+    include_str!("migrations/007_checkout.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
      fiat_currency, fiat_amount_minor, fiat_rate_minor, fiat_quoted_at, fiat_source, description, payment_hash, \
-     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at";
+     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url";
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -127,6 +128,8 @@ fn escrow_from_row(row: &SqliteRow) -> Result<Escrow, StoreError> {
         deadline_at: row.try_get("deadline_at").map_err(backend)?,
         created_at: row.try_get("created_at").map_err(backend)?,
         updated_at: row.try_get("updated_at").map_err(backend)?,
+        reference: row.try_get("reference").map_err(backend)?,
+        return_url: row.try_get("return_url").map_err(backend)?,
     })
 }
 
@@ -177,7 +180,7 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for SqliteStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
@@ -201,6 +204,8 @@ impl Store for SqliteStore {
         .bind(e.deadline_at)
         .bind(e.created_at)
         .bind(e.updated_at)
+        .bind(&e.reference)
+        .bind(&e.return_url)
         .execute(&self.pool)
         .await;
         match res {

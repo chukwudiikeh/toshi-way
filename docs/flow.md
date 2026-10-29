@@ -646,6 +646,26 @@ A business wants its own software to create escrows and check on them. Until now
 
 ---
 
+## 30. The checkout link (step 2 of the merchant integration)
+
+A business sends its customer to our escrow page to accept and pay, then needs two things: its own order number on the escrow, and a way for the customer to get back to its site. That is all step 2 adds. The page itself is the existing escrow page, which already signs a new visitor up on the spot (section 15, open-offer links), so the "checkout" is that link.
+
+**What a business sends when it makes an offer** (`POST /api/v1/escrows`, with an API key or the account token), two new optional fields:
+- `reference`: the business's own order number or label, 1 to 100 characters, no control characters. Empty means none.
+- `return_url`: a link back to the business. `https://` only, with a plain ASCII host and no login in it (`user@host` is refused). `http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`, so a business can try it out on its own machine. At most 500 characters, no spaces, control characters or backslashes.
+
+Both are stored on the escrow (`reference`, `return_url`; sqlite migration 007, Postgres 006), returned in every view of it, and part of the idempotency check, so a retry with the same `Idempotency-Key` must send the same order number.
+
+**The checkout link.** When the server knows its web address (`PUBLIC_WEB_URL`, for example `https://pay.example.com`), the create, get and list responses carry `checkout_url`: `<address>/escrows/<id>`. The business redirects the customer there. Without the setting there is no such field, and the business builds the link itself.
+
+**What the customer sees.** The escrow page shows "Order <reference>" beside the title and the reference in the details panel. After the customer has accepted the offer, a "Back to the seller" panel shows a button "Return to <host>" with the address spelled out. Only buyers see it, and only after accepting.
+
+**Why the return link is careful.** The link is chosen by the seller and shown to a stranger, so it is a phishing risk. It is never followed automatically: the buyer must click, the address is written out in the button, the panel says the seller chose it, and the page only renders `http(s)` links (the browser re-checks what the server already checked). The link has `rel="noopener noreferrer"`. We add nothing to it, such as the escrow's status, so the business cannot mistake a click for proof of payment: **a business must learn that an escrow was paid from the API (polling now, webhooks in step 3), never from the customer arriving back on its site.**
+
+**Verified.** Unit tests for the validators (accepted and refused links and references, including `trusted.com@evil.com`, `javascript:`, backslash tricks, bad ports and hosts, non-ASCII hosts); four HTTP tests (kept and shown to both sides, misleading links refused, idempotency with the order number, the checkout link only when configured); the store contract on memory, SQLite and Postgres; a browser test where a business's key makes an offer with an order number and a link back (a misleading link is refused with 400), the customer sees the order, has no way out before accepting, and after accepting gets a link with the right address and `noopener`.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
