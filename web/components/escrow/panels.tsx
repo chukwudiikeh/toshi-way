@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
 import { formatSats } from "@/lib/clock";
 import { DisputeForm, SecretInput, type Escrow, type Invoice } from "@/lib/schemas";
+import { loadArbiterKey, openSealed, sealSecret } from "@/lib/arbiter";
 import { scannerSupported, secretFromScan } from "@/lib/scan";
 import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } from "@/lib/secret";
 import { getWebLN, payWithWebLN } from "@/lib/webln";
@@ -62,6 +63,7 @@ export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret }: PanelPro
 
   let body: ReactNode;
   if (role === "operator") body = <OperatorPanel escrow={escrow} actions={actions} />;
+  else if (role === "arbiter") body = <ArbiterPanel escrow={escrow} actions={actions} />;
   else if (role === "buyer") body = <BuyerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
   else body = <SellerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
 
@@ -71,7 +73,7 @@ export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret }: PanelPro
     <Card>
       <div className="space-y-5">
         <NextSteps escrow={escrow} />
-        {linkSecret && !releasable && role !== "operator" && (
+        {linkSecret && !releasable && role !== "operator" && role !== "arbiter" && (
           <Notice tone="info">
             You opened a release link, but there is nothing to release while the escrow is in this state.
           </Notice>
@@ -103,8 +105,9 @@ function NextSteps({ escrow }: { escrow: Escrow }) {
       : seller
         ? "The buyer's payment is locked, so you can start the work. On delivery, get the buyer's release QR (or 64-character secret) and submit it before the deadline. After the deadline the buyer is refunded automatically and the payment can no longer be claimed."
         : "Funds are locked. They settle if the secret is submitted before the deadline, otherwise they are refunded.",
-    DISPUTED:
-      "A dispute is open and the operator will review it. The deadline still applies: if the secret isn't submitted before it, the buyer is refunded automatically. The parties can still settle it themselves (release with the secret) or the seller can give a refund.",
+    DISPUTED: escrow.arbiter_id
+      ? "A dispute is open and the arbiter will decide it: either the seller is paid or the buyer is refunded. The deadline still applies: if no decision is made before it, the buyer is refunded automatically. The parties can still settle it themselves with the secret."
+      : "A dispute is open and the operator will review it. The deadline still applies: if the secret isn't submitted before it, the buyer is refunded automatically. The parties can still settle it themselves (release with the secret) or the seller can give a refund.",
     SETTLED: buyer ? "Done. The seller has been paid." : seller ? "Done. You were paid." : "Settled: the seller was paid.",
     REFUNDED: buyer
       ? "Done. Your payment was cancelled and the funds are back in your wallet."
@@ -157,13 +160,21 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
         p = generateSecret();
         saveSecret(escrow.id, p);
       }
+      // With an arbiter, the secret is also encrypted to their key so only they can open it. The
+      // server stores that blob but cannot read it.
+      const send = async (secret: string) =>
+        api.accept(
+          escrow.id,
+          await hashSecret(secret),
+          escrow.arbiter_key ? await sealSecret(secret, escrow.arbiter_key) : undefined,
+        );
       try {
-        return await api.accept(escrow.id, await hashSecret(p));
+        return await send(p);
       } catch (err) {
         if (!(err instanceof ApiError) || err.code !== "hash_in_use") throw err;
         p = generateSecret();
         saveSecret(escrow.id, p);
-        return await api.accept(escrow.id, await hashSecret(p));
+        return await send(p);
       }
     });
     if (ok) setSecretVersion((v) => v + 1);
@@ -178,6 +189,7 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
             is cleared, the secret is lost and the escrow can only end in a refund. Use the browser you will have
             with you at delivery.
           </Notice>
+          {escrow.arbiter_id && <ArbiterNotice escrow={escrow} />}
           <Button onClick={accept} busy={actions.busy === "accept"}>
             Accept offer of {formatSats(escrow.amount_sats)}
           </Button>
@@ -427,6 +439,7 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
     case "CREATED":
       return (
         <div className="space-y-3">
+          {escrow.arbiter_id && <ArbiterNotice escrow={escrow} />}
           <div className="text-sm font-medium">Link for the buyer</div>
           <CopyField value={`${appUrl()}/escrows/${escrow.id}`} label="Copy link" />
           <p className="text-xs text-neutral-500">
@@ -455,6 +468,7 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           {escrow.invoice_expires_at && (
             <Countdown until={escrow.invoice_expires_at} label="Invoice expires in" endedText="Expired" />
           )}
+          {escrow.arbiter_id && <ArbiterNotice escrow={escrow} />}
           {refund}
         </div>
       );
@@ -465,6 +479,13 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           {escrow.state === "LOCKED" && (
             <Notice tone="success">
               <strong>Funds are locked: you can start the work.</strong>
+            </Notice>
+          )}
+          {escrow.state === "LOCKED" && escrow.arbiter_id && !escrow.arbiter_confirmed_at && (
+            <Notice tone="warn">
+              <strong>The arbiter hasn&apos;t confirmed yet.</strong> Until they do, you can&apos;t count on them being
+              able to release this if there is a dispute: the buyer&apos;s sealed secret hasn&apos;t been checked.
+              Consider waiting for the confirmation before you start.
             </Notice>
           )}
           <Deadline escrow={escrow} />
@@ -651,4 +672,147 @@ function OperatorPanel({ escrow, actions }: { escrow: Escrow; actions: Actions }
       )}
     </div>
   );
+}
+
+// Arbiter
+
+/** The arbiter's key fingerprint and confirmation status, shown to buyer and seller. */
+function ArbiterNotice({ escrow }: { escrow: Escrow }) {
+  return (
+    <Notice tone="info">
+      <div className="space-y-1">
+        <div>
+          <strong>This escrow has an arbiter</strong> (<span className="font-mono">{escrow.arbiter_id}</span>) who
+          decides a dispute.
+        </div>
+        <div className="text-xs">
+          Their key fingerprint is <span className="break-words font-mono">{escrow.arbiter_fingerprint}</span>. Check
+          it with them: the buyer&apos;s release secret is encrypted to this key, so it must really be theirs.
+        </div>
+        <div className="text-xs">
+          {escrow.arbiter_confirmed_at
+            ? "The arbiter has confirmed they can open the buyer's secret."
+            : "The arbiter has not confirmed yet."}
+        </div>
+      </div>
+    </Notice>
+  );
+}
+
+type Verified = { status: "idle" | "checking" | "ok" | "bad"; message?: string };
+
+function ArbiterPanel({ escrow, actions }: { escrow: Escrow; actions: Actions }) {
+  const [verified, setVerified] = useState<Verified>({ status: "idle" });
+  // The decrypted secret lives in memory only, for as long as this panel does.
+  const [secret, setSecret] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+
+  /** Open the sealed secret with this device's private key and check it matches the payment hash. */
+  async function verify(): Promise<string | null> {
+    setVerified({ status: "checking" });
+    try {
+      const fp = escrow.arbiter_fingerprint;
+      const key = fp ? loadArbiterKey(fp) : null;
+      if (!key) {
+        throw new Error(
+          "This browser doesn't hold your private key for this escrow's key. Restore your backup on the Arbiter page.",
+        );
+      }
+      const arbitration = await api.arbitration(escrow.id);
+      const opened = await openSealed(arbitration.sealed_secret, key);
+      if ((await hashSecret(opened)) !== escrow.payment_hash) {
+        throw new Error(
+          "The sealed secret opens, but it does not match this escrow's payment hash. It cannot release the payment, so don't confirm.",
+        );
+      }
+      setSecret(opened);
+      setVerified({ status: "ok", message: "The sealed secret opens and matches the payment hash." });
+      return opened;
+    } catch (err) {
+      setSecret(null);
+      setVerified({ status: "bad", message: err instanceof Error ? err.message : describeError(err) });
+      return null;
+    }
+  }
+
+  const result =
+    verified.status === "ok" ? (
+      <Notice tone="success">{verified.message}</Notice>
+    ) : verified.status === "bad" ? (
+      <Notice tone="error">{verified.message}</Notice>
+    ) : null;
+
+  switch (escrow.state) {
+    case "CREATED":
+      return <p className="text-sm">You are the arbiter. The buyer has not accepted yet, so there is nothing to check.</p>;
+    case "INVOICE_ISSUED":
+    case "LOCKED":
+      return (
+        <div className="space-y-4">
+          <p className="text-sm">
+            You are the arbiter. If either side opens a dispute you decide who is paid. First check that you can open
+            the buyer&apos;s sealed secret, then confirm so the seller knows arbitration will work.
+          </p>
+          {escrow.arbiter_confirmed_at ? (
+            <Notice tone="success">You confirmed this. Nothing more to do unless a dispute is opened.</Notice>
+          ) : (
+            <div className="space-y-3">
+              <Button variant="secondary" onClick={verify} busy={verified.status === "checking"}>
+                Check the sealed secret
+              </Button>
+              {result}
+              {verified.status === "ok" && (
+                <Button onClick={() => actions.run("confirm", () => api.confirmArbiter(escrow.id))} busy={actions.busy === "confirm"}>
+                  Confirm to both parties
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    case "DISPUTED":
+      return (
+        <div className="space-y-4">
+          <Notice tone="warn">
+            <strong>A dispute is waiting for your decision.</strong> Read the history below, then decide. You must
+            decide before the deadline: after it the buyer is refunded automatically.
+          </Notice>
+          <Deadline escrow={escrow} />
+          <Field label="Your note (shown in the history)" hint="Optional. Why you decided this way.">
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className={inputClass}
+              rows={2}
+              maxLength={500}
+            />
+          </Field>
+          {result}
+          <div className="flex flex-wrap gap-2">
+            <ConfirmButton
+              confirmText={`Pay the seller ${formatSats(escrow.amount_sats)}? This can't be undone.`}
+              confirmLabel="Yes, pay the seller"
+              busy={actions.busy === "decide"}
+              onConfirm={async () => {
+                const opened = secret ?? (await verify());
+                if (opened) await actions.run("decide", () => api.decide(escrow.id, "release", note, opened));
+              }}
+            >
+              Release to the seller
+            </ConfirmButton>
+            <ConfirmButton
+              confirmText={`Refund the buyer ${formatSats(escrow.amount_sats)}? The seller will not be paid.`}
+              confirmLabel="Yes, refund the buyer"
+              variant="danger"
+              busy={actions.busy === "decide"}
+              onConfirm={() => actions.run("decide", () => api.decide(escrow.id, "refund", note))}
+            >
+              Refund the buyer
+            </ConfirmButton>
+          </div>
+        </div>
+      );
+    default:
+      return <FinalSummary escrow={escrow} />;
+  }
 }

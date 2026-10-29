@@ -44,6 +44,7 @@ async fn full_flow_survives_a_restart_on_a_real_database_file() {
             .create(
                 NewEscrow {
                     buyer_id: Some("buyer".into()),
+                    arbiter: None,
                     seller_id: "seller".into(),
                     amount_sats: 1000,
                     description: "parcel".into(),
@@ -83,6 +84,7 @@ async fn two_escrows_cannot_share_a_payment_hash_even_around_the_service() {
     let svc = EscrowService::new(MockLightning::new(), Arc::new(store), TimingConfig::default());
     let new = || NewEscrow {
         buyer_id: Some("b".into()),
+        arbiter: None,
         seller_id: "s".into(),
         amount_sats: 1,
         description: "x".into(),
@@ -94,19 +96,36 @@ async fn two_escrows_cannot_share_a_payment_hash_even_around_the_service() {
     assert!(svc.accept(&b.id, h, "b", T0).await.is_err());
 }
 
+/// No column anywhere can hold the release secret. The one thing that relates to it is
+/// `arbiter_sealed`: the secret encrypted to the arbiter's key, which the server cannot read.
 #[tokio::test]
 async fn the_database_has_no_place_to_keep_a_preimage() {
+    use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Row};
     let path = temp_db("schema");
-    let store = SqliteStore::open(&path).await.unwrap();
-    drop(store);
-    let schema = [
-        include_str!("../src/migrations/001_initial.sql"),
-        include_str!("../src/migrations/002_open_offers.sql"),
-    ]
-    .join("\n")
-    .to_lowercase();
-    assert!(!schema.contains("preimage"));
-    assert!(!schema.contains("secret"));
+    drop(SqliteStore::open(&path).await.unwrap());
+
+    let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
+    let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .fetch_all(&mut conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<String, _>("name"))
+        .collect();
+    let mut columns = Vec::new();
+    for t in &tables {
+        for row in sqlx::query(&format!("PRAGMA table_info({t})")).fetch_all(&mut conn).await.unwrap() {
+            columns.push(format!("{t}.{}", row.get::<String, _>("name")));
+        }
+    }
+    assert!(columns.len() > 20, "found the schema: {columns:?}");
+    for c in &columns {
+        let name = c.to_lowercase();
+        assert!(!name.contains("preimage"), "{c}");
+        // The only column mentioning a secret-like word is the sealed (encrypted) blob.
+        assert!(!name.contains("secret") || name.ends_with("sealed"), "{c}");
+    }
+    assert!(columns.contains(&"escrows.arbiter_sealed".to_string()));
 }
 
 /// A database created before migrations existed (schema applied, `user_version` 0, a real escrow
@@ -143,5 +162,5 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }

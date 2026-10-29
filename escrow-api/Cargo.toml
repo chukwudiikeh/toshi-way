@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
+base64 = "0.22"
 escrow-core = { path = "../escrow-core" }
 escrow-lnd = { path = "../escrow-lnd" }
 escrow-postgres = { path = "../escrow-postgres" }

@@ -58,6 +58,9 @@ export function Header() {
               <Link href="/node" className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800">
                 My node
               </Link>
+              <Link href="/arbiter" className="rounded-md px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                Arbiter
+              </Link>
             </>
           )}
           {session?.kind === "operator" && (

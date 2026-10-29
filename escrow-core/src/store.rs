@@ -24,6 +24,8 @@ pub enum StoreError {
 /// What a transition changes besides the state itself.
 #[derive(Debug, Clone, Default)]
 pub struct EscrowUpdate {
+    pub arbiter_sealed: Option<String>,
+    pub arbiter_confirmed_at: Option<i64>,
     /// Set when the first user to accept an open offer becomes its buyer.
     pub buyer_id: Option<String>,
     pub payment_hash: Option<PaymentHash>,
@@ -38,7 +40,7 @@ pub trait Store: Send + Sync {
     async fn get_by_hash(&self, hash: &PaymentHash) -> Result<Option<Escrow>, StoreError>;
     /// Escrows that are not in a terminal state.
     async fn list_active(&self) -> Result<Vec<Escrow>, StoreError>;
-    /// Escrows where `user_id` is the buyer or the seller, newest first (ties by id), at most 100.
+    /// Escrows where `user_id` is the buyer, the seller or the arbiter, newest first (ties by id), at most 100.
     async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, StoreError>;
     /// Atomically move `id` from `expected` to `audit.to_state`, apply `update`, and append
     /// `audit`. Fails with `Conflict` if the escrow is no longer in `expected`.
@@ -61,6 +63,10 @@ pub trait UserStore: Send + Sync {
     async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError>;
     async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError>;
     async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError>;
+    /// Register (replacing any earlier one) the public key others encrypt release secrets to when
+    /// they name this user as their arbiter. Base64 SPKI of an ECDH P-256 key.
+    async fn put_arbiter_key(&self, user_id: &str, public_key: &str, at: i64) -> Result<(), StoreError>;
+    async fn arbiter_key(&self, user_id: &str) -> Result<Option<String>, StoreError>;
     /// Save (replacing any earlier one) how to reach a seller's own node.
     async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError>;
     async fn node_connection(&self, user_id: &str) -> Result<Option<NodeConnection>, StoreError>;
@@ -80,6 +86,7 @@ struct MemoryInner {
     node_events: Vec<NodeEventRecord>,
     users: Vec<(User, String)>,
     node_connections: Vec<NodeConnection>,
+    arbiter_keys: Vec<(String, String)>,
 }
 
 impl MemoryStore {
@@ -133,7 +140,11 @@ impl Store for MemoryStore {
             .unwrap()
             .escrows
             .iter()
-            .filter(|e| e.buyer_id.as_deref() == Some(user_id) || e.seller_id == user_id)
+            .filter(|e| {
+                e.buyer_id.as_deref() == Some(user_id)
+                    || e.seller_id == user_id
+                    || e.arbiter_id.as_deref() == Some(user_id)
+            })
             .cloned()
             .collect();
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
@@ -157,6 +168,12 @@ impl Store for MemoryStore {
         e.updated_at = audit.created_at;
         if update.buyer_id.is_some() {
             e.buyer_id = update.buyer_id;
+        }
+        if update.arbiter_sealed.is_some() {
+            e.arbiter_sealed = update.arbiter_sealed;
+        }
+        if update.arbiter_confirmed_at.is_some() {
+            e.arbiter_confirmed_at = update.arbiter_confirmed_at;
         }
         if update.payment_hash.is_some() {
             e.payment_hash = update.payment_hash;
@@ -259,6 +276,17 @@ impl UserStore for MemoryStore {
         Ok(self.inner.lock().unwrap().users.iter().find(|(u, _)| u.id == id).map(|(u, _)| u.clone()))
     }
 
+    async fn put_arbiter_key(&self, user_id: &str, public_key: &str, _at: i64) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.arbiter_keys.retain(|(u, _)| u != user_id);
+        g.arbiter_keys.push((user_id.to_string(), public_key.to_string()));
+        Ok(())
+    }
+
+    async fn arbiter_key(&self, user_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.inner.lock().unwrap().arbiter_keys.iter().find(|(u, _)| u == user_id).map(|(_, k)| k.clone()))
+    }
+
     async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError> {
         let mut g = self.inner.lock().unwrap();
         g.node_connections.retain(|c| c.user_id != conn.user_id);
@@ -288,6 +316,12 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
     }
     async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
         (**self).get_user(id).await
+    }
+    async fn put_arbiter_key(&self, user_id: &str, public_key: &str, at: i64) -> Result<(), StoreError> {
+        (**self).put_arbiter_key(user_id, public_key, at).await
+    }
+    async fn arbiter_key(&self, user_id: &str) -> Result<Option<String>, StoreError> {
+        (**self).arbiter_key(user_id).await
     }
     async fn put_node_connection(&self, conn: NodeConnection) -> Result<(), StoreError> {
         (**self).put_node_connection(conn).await

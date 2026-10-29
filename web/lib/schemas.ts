@@ -38,12 +38,21 @@ export const Escrow = z.object({
   deadline_at: unixSecs,
   created_at: unixSecs,
   updated_at: unixSecs,
-  your_role: z.enum(["buyer", "seller", "operator"]),
+  your_role: z.enum(["buyer", "seller", "arbiter", "operator"]),
   /**
    * Whose Lightning node holds the invoice. "own": the seller's, so a release pays the seller
    * directly. "shared": the service's, so the service receives the sats and owes them to the seller.
    */
   seller_node: z.enum(["own", "shared"]).default("shared"),
+  /** A trusted third party who decides disputes, when the seller named one. */
+  arbiter_id: z.string().nullable().default(null),
+  /** Their public key as recorded when the escrow was created: what the buyer encrypts to. */
+  arbiter_key: z.string().nullable().default(null),
+  arbiter_fingerprint: z.string().nullable().default(null),
+  /** Whether the buyer has sealed the release secret to the arbiter (the blob itself is never shown). */
+  arbiter_sealed: z.boolean().default(false),
+  /** When the arbiter confirmed they can open it; until then the seller should not rely on arbitration. */
+  arbiter_confirmed_at: unixSecs.nullable().default(null),
 });
 export type Escrow = z.infer<typeof Escrow>;
 
@@ -100,6 +109,18 @@ export const NodeForm = z.object({
 });
 export type NodeForm = z.infer<typeof NodeForm>;
 
+export const ArbiterKey = z.object({ public_key: z.string().nullable(), fingerprint: z.string().nullable() });
+export type ArbiterKey = z.infer<typeof ArbiterKey>;
+
+/** What an arbiter fetches to judge: the sealed secret and the hash it must match. */
+export const Arbitration = z.object({
+  sealed_secret: z.string().min(1),
+  payment_hash: hex64.nullable(),
+  arbiter_key: z.string().nullable(),
+  state: EscrowState,
+});
+export type Arbitration = z.infer<typeof Arbitration>;
+
 export const NewUser = z.object({ id: z.string().min(1), role: z.string(), token: z.string().min(1) });
 export type NewUser = z.infer<typeof NewUser>;
 
@@ -123,6 +144,8 @@ export const HOLD_UNITS = { minutes: 60, hours: 3600 } as const;
 
 export const NewEscrowForm = z
   .object({
+    /** Optional: someone both sides trust to decide a dispute. */
+    arbiter_id: z.string().trim().default(""),
     /** Optional: leave empty for an open offer that the first user to accept becomes the buyer of. */
     buyer_id: z.string().trim(),
     amount_sats: z.coerce
@@ -148,7 +171,13 @@ export const NewEscrowForm = z
       });
       return z.NEVER;
     }
-    return { buyer_id: f.buyer_id || undefined, amount_sats: f.amount_sats, description: f.description, hold_secs };
+    return {
+      ...(f.buyer_id ? { buyer_id: f.buyer_id } : {}),
+      ...(f.arbiter_id ? { arbiter_id: f.arbiter_id } : {}),
+      amount_sats: f.amount_sats,
+      description: f.description,
+      hold_secs,
+    };
   });
 export type NewEscrowRequest = z.output<typeof NewEscrowForm>;
 

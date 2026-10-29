@@ -36,6 +36,12 @@ pub enum ServiceError {
     Store(StoreError),
 }
 
+/// Base64 text of a plausible size for a P-256 ECIES blob (65-byte key + 12-byte nonce + 48 bytes).
+fn valid_sealed(s: &str) -> bool {
+    (100..=1024).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+}
+
 impl From<StoreError> for ServiceError {
     fn from(e: StoreError) -> Self {
         match e {
@@ -50,9 +56,19 @@ pub struct NewEscrow {
     /// `None` creates an open offer: the first user to accept becomes the buyer.
     pub buyer_id: Option<String>,
     pub seller_id: String,
+    /// The arbiter and the public key recorded for them now. Both or neither.
+    pub arbiter: Option<(String, String)>,
     pub amount_sats: u64,
     pub description: String,
     pub deadline_at: i64,
+}
+
+/// What an arbiter decides about a disputed escrow.
+pub enum Decision {
+    /// Pay the seller: needs the release secret, which the arbiter decrypted.
+    Release(Preimage),
+    /// Give the buyer their money back.
+    Refund,
 }
 
 /// An invoice to watch and where to find it.
@@ -171,12 +187,21 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             return Err(ServiceError::Invalid("buyer and seller must differ".into()));
         }
         self.timing.validate_deadline(now, new.deadline_at)?;
+        if let Some((arbiter, _)) = &new.arbiter {
+            if *arbiter == new.seller_id || new.buyer_id.as_deref() == Some(arbiter.as_str()) {
+                return Err(ServiceError::Invalid("the arbiter must be someone other than the buyer and seller".into()));
+            }
+        }
         // Fails with `NoNode` if the seller has no node and there is no shared one.
         let node = self.adapter.kind_for_new(&new.seller_id).await?;
         let escrow = Escrow {
             id: uuid::Uuid::new_v4().to_string(),
             buyer_id: new.buyer_id,
             seller_id: new.seller_id,
+            arbiter_id: new.arbiter.as_ref().map(|(id, _)| id.clone()),
+            arbiter_key: new.arbiter.map(|(_, key)| key),
+            arbiter_sealed: None,
+            arbiter_confirmed_at: None,
             node,
             amount_sats: new.amount_sats,
             description: new.description,
@@ -202,6 +227,20 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         actor: &str,
         now: i64,
     ) -> Result<Escrow, ServiceError> {
+        self.accept_with(id, hash, actor, now, None).await
+    }
+
+    /// `accept`, plus the buyer's release secret encrypted to the arbiter. An escrow with an
+    /// arbiter cannot be accepted without it (otherwise arbitration would have nothing to release),
+    /// and one without cannot take it. The server never sees what is inside.
+    pub async fn accept_with(
+        &self,
+        id: &str,
+        hash: PaymentHash,
+        actor: &str,
+        now: i64,
+        sealed: Option<String>,
+    ) -> Result<Escrow, ServiceError> {
         let e = self.get(id).await?;
         match e.buyer_id.as_deref() {
             Some(buyer) if buyer != actor => {
@@ -222,6 +261,18 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
                 return Err(ServiceError::HashInUse);
             }
         }
+        match (&e.arbiter_id, &sealed) {
+            (Some(_), None) => {
+                return Err(ServiceError::Invalid("this escrow has an arbiter: the sealed release secret is required".into()))
+            }
+            (None, Some(_)) => {
+                return Err(ServiceError::Invalid("this escrow has no arbiter, so there is nothing to seal the secret to".into()))
+            }
+            (Some(_), Some(s)) if !valid_sealed(s) => {
+                return Err(ServiceError::Invalid("the sealed secret is not valid".into()))
+            }
+            _ => {}
+        }
         self.timing.validate_deadline(now, e.deadline_at)?;
 
         let expiry_secs = self.timing.invoice_expiry_secs.min(e.deadline_at - now);
@@ -237,10 +288,12 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             })
             .await?;
         let update = EscrowUpdate {
+            arbiter_sealed: sealed,
             buyer_id: e.buyer_id.is_none().then(|| actor.to_string()),
             payment_hash: Some(hash),
             invoice: Some(invoice),
             invoice_expires_at: Some(now + expiry_secs),
+            ..Default::default()
         };
         self.move_to(&e, EscrowState::InvoiceIssued, update, actor, "accept", "hold invoice issued", now)
             .await
@@ -272,6 +325,17 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         actor: &str,
         now: i64,
     ) -> Result<Escrow, ServiceError> {
+        self.release_as(id, preimage, actor, "release", now).await
+    }
+
+    async fn release_as(
+        &self,
+        id: &str,
+        preimage: &Preimage,
+        actor: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<Escrow, ServiceError> {
         let e = self.get(id).await?;
         let hash = e.payment_hash.ok_or(ServiceError::InvalidState { action: "release", state: e.state })?;
         if preimage.hash() != hash {
@@ -286,7 +350,7 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             return Err(ServiceError::TooLate);
         }
         self.node_of(&e).await?.settle_invoice(preimage).await?;
-        self.sync_from_node(e, actor, "release", now).await
+        self.sync_from_node(e, actor, reason, now).await
     }
 
     /// Cancel the hold invoice. Repeating it on an already cancelled escrow is a no-op.
@@ -313,6 +377,107 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         };
         self.node_of(&e).await?.cancel_invoice(&hash).await?;
         self.sync_from_node(e, actor, reason, now).await
+    }
+
+    /// The arbiter says they can decrypt the buyer's sealed secret and that it matches the payment
+    /// hash, so the seller can rely on arbitration. The service cannot check this itself (it cannot
+    /// read the secret); it records the arbiter's word. Repeating it changes nothing.
+    pub async fn confirm_arbiter(&self, id: &str, actor: &str, now: i64) -> Result<Escrow, ServiceError> {
+        let e = self.get(id).await?;
+        if e.arbiter_id.as_deref() != Some(actor) {
+            return Err(ServiceError::Invalid("only the arbiter can confirm".into()));
+        }
+        if e.arbiter_confirmed_at.is_some() {
+            return Ok(e);
+        }
+        if e.arbiter_sealed.is_none() || !matches!(e.state, EscrowState::InvoiceIssued | EscrowState::Locked) {
+            return Err(ServiceError::InvalidState { action: "confirm", state: e.state });
+        }
+        let audit = AuditEntry {
+            escrow_id: e.id.clone(),
+            actor: actor.to_string(),
+            action: "arbiter_confirm".into(),
+            from_state: e.state,
+            to_state: e.state,
+            reason: "arbiter can release this escrow".into(),
+            created_at: now,
+        };
+        let update = EscrowUpdate { arbiter_confirmed_at: Some(now), ..Default::default() };
+        match self.store.transition(&e.id, e.state, update, audit).await {
+            Err(StoreError::Conflict) => Ok(self.get(id).await?),
+            other => Ok(other?),
+        }
+    }
+
+    /// The arbiter settles a disputed escrow. Only the named arbiter, only while it is disputed
+    /// and before the deadline passes (the hold cannot be extended: after it, the scheduler
+    /// refunds). Releasing needs the secret and is checked against the payment hash like any other
+    /// release; refunding cancels the hold. Repeating the same decision is a no-op.
+    pub async fn arbitrate(
+        &self,
+        id: &str,
+        arbiter: &str,
+        decision: Decision,
+        note: &str,
+        now: i64,
+    ) -> Result<Escrow, ServiceError> {
+        let e = self.get(id).await?;
+        if e.arbiter_id.as_deref() != Some(arbiter) {
+            return Err(ServiceError::Invalid("only the arbiter can decide".into()));
+        }
+        let reason = |verb: &str| match note.trim() {
+            "" => format!("arbiter decided: {verb}"),
+            n => format!("arbiter decided: {verb} ({n})"),
+        };
+        match (&decision, e.state) {
+            (Decision::Release(_), EscrowState::Settled) | (Decision::Refund, EscrowState::Refunded) => return Ok(e),
+            (_, EscrowState::Disputed) => {}
+            (_, state) => return Err(ServiceError::InvalidState { action: "arbitrate", state }),
+        }
+        if now >= e.deadline_at {
+            return Err(ServiceError::TooLate);
+        }
+        // Put the decision on the record before touching the node. The node reports the settlement
+        // or cancellation itself and can win the race to record the state change, which would
+        // credit "the node" and drop the arbiter's name and note.
+        let verb = match &decision {
+            Decision::Release(p) => {
+                // A decision that cannot be carried out is not a decision: check before recording.
+                if Some(p.hash()) != e.payment_hash {
+                    return Err(ServiceError::WrongPreimage);
+                }
+                "release to the seller"
+            }
+            Decision::Refund => "refund the buyer",
+        };
+        self.record_decision(&e, arbiter, &reason(verb), now).await?;
+        match decision {
+            Decision::Release(p) => self.release_as(id, &p, arbiter, &reason(verb), now).await,
+            Decision::Refund => self.cancel(id, arbiter, &reason(verb), now).await,
+        }
+    }
+
+    /// Add the arbiter's decision to the audit log without changing the state. Repeating the same
+    /// decision (for example after a failed node call) does not add a second entry.
+    async fn record_decision(&self, e: &Escrow, arbiter: &str, reason: &str, now: i64) -> Result<(), ServiceError> {
+        let log = self.store.audit_log(&e.id).await?;
+        if log.iter().rev().find(|a| a.action == "arbiter_decision").is_some_and(|a| a.reason == reason) {
+            return Ok(());
+        }
+        let audit = AuditEntry {
+            escrow_id: e.id.clone(),
+            actor: arbiter.to_string(),
+            action: "arbiter_decision".into(),
+            from_state: e.state,
+            to_state: e.state,
+            reason: reason.to_string(),
+            created_at: now,
+        };
+        match self.store.transition(&e.id, e.state, EscrowUpdate::default(), audit).await {
+            // The escrow moved on in the meantime (a node event); the action below will see it.
+            Ok(_) | Err(StoreError::Conflict) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Flag a dispute. Does not extend the hold: the deadline still applies.
