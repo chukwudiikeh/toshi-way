@@ -2,9 +2,9 @@
 //! [`store_contract`] with a fresh, empty store so MemoryStore, SQLite and Postgres stay interchangeable.
 
 use crate::{
-    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState},
+    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState, Role, User},
     state::EscrowState,
-    store::{EscrowUpdate, Store, StoreError},
+    store::{EscrowUpdate, Store, StoreError, UserStore},
 };
 
 fn escrow(id: &str) -> Escrow {
@@ -120,4 +120,22 @@ pub async fn store_contract(store: &dyn Store) {
     assert_eq!(events[0].node_invoice_state, NodeInvoiceState::Accepted);
     assert_eq!(events[1].raw_event_hash, "hash-320");
     assert!(store.node_events("b").await.unwrap().is_empty());
+}
+
+pub async fn user_store_contract(store: &dyn UserStore) {
+    let alice = User { id: "alice".into(), role: Role::User, created_at: 10 };
+    let root = User { id: "root".into(), role: Role::Operator, created_at: 11 };
+    store.insert_user(alice.clone(), "hash-a".into()).await.unwrap();
+    store.insert_user(root.clone(), "hash-r".into()).await.unwrap();
+
+    assert_eq!(store.user_by_token_hash("hash-a").await.unwrap(), Some(alice.clone()));
+    assert_eq!(store.user_by_token_hash("hash-r").await.unwrap(), Some(root));
+    assert_eq!(store.user_by_token_hash("nope").await.unwrap(), None);
+    assert_eq!(store.get_user("alice").await.unwrap(), Some(alice.clone()));
+    assert_eq!(store.get_user("ghost").await.unwrap(), None);
+
+    // Ids and token hashes are unique.
+    assert_eq!(store.insert_user(alice, "other".into()).await, Err(StoreError::Conflict));
+    let bob = User { id: "bob".into(), role: Role::User, created_at: 12 };
+    assert_eq!(store.insert_user(bob, "hash-a".into()).await, Err(StoreError::Conflict));
 }

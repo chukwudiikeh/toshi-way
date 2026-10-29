@@ -68,6 +68,11 @@ echo "==> opening channels"
 open_channel buyer router
 open_channel router seller
 
+# Peer links drop when containers restart; channels stay inactive until they are re-established.
+echo "==> (re)connecting peers"
+connect buyer router
+connect router seller
+
 echo "==> waiting for channels to become active"
 for n in "${NODES[@]}"; do
   wait_for "$n channels" bash -c "$DC exec -T $n lncli --network=regtest getinfo | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin)[\"num_active_channels\"]>=1 else 1)'"

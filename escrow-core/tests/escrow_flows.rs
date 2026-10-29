@@ -372,6 +372,11 @@ async fn memory_store_meets_the_store_contract() {
 }
 
 #[tokio::test]
+async fn memory_store_meets_the_user_store_contract() {
+    escrow_core::testing::user_store_contract(&MemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn node_events_are_recorded_for_the_audit_trail() {
     let f = fixture();
     let p = secret(1);

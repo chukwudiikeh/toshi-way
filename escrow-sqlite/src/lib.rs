@@ -4,9 +4,9 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use escrow_core::{
-    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState, PaymentHash},
+    model::{AuditEntry, Escrow, NodeEventRecord, NodeInvoiceState, PaymentHash, User},
     state::EscrowState,
-    store::{EscrowUpdate, Store, StoreError},
+    store::{EscrowUpdate, Store, StoreError, UserStore},
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
@@ -282,5 +282,50 @@ impl Store for SqliteStore {
                 })
             })
             .collect()
+    }
+}
+
+fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
+    let role: String = row.try_get("role").map_err(backend)?;
+    Ok(User {
+        id: row.try_get("id").map_err(backend)?,
+        role: role.parse().map_err(StoreError::Backend)?,
+        created_at: row.try_get("created_at").map_err(backend)?,
+    })
+}
+
+#[async_trait]
+impl UserStore for SqliteStore {
+    async fn insert_user(&self, user: User, token_hash: String) -> Result<(), StoreError> {
+        let res = sqlx::query("INSERT INTO users (id, role, token_hash, created_at) VALUES (?, ?, ?, ?)")
+            .bind(&user.id)
+            .bind(user.role.as_str())
+            .bind(token_hash)
+            .bind(user.created_at)
+            .execute(&self.pool)
+            .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(StoreError::Conflict),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    async fn user_by_token_hash(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
+        let row = sqlx::query("SELECT id, role, created_at FROM users WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(user_from_row).transpose()
+    }
+
+    async fn get_user(&self, id: &str) -> Result<Option<User>, StoreError> {
+        let row = sqlx::query("SELECT id, role, created_at FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.as_ref().map(user_from_row).transpose()
     }
 }

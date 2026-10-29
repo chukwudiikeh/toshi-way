@@ -84,6 +84,40 @@ pub struct NodeInvoice {
     pub htlc_expiry_height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    User,
+    Operator,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Operator => "operator",
+        }
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user" => Ok(Self::User),
+            "operator" => Ok(Self::Operator),
+            other => Err(format!("unknown role '{other}'")),
+        }
+    }
+}
+
+/// Whether someone is the buyer or seller of an escrow is per escrow, not part of the account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct User {
+    pub id: String,
+    pub role: Role,
+    pub created_at: i64,
+}
+
 /// A node report about an escrow's invoice, kept for the audit trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeEventRecord {

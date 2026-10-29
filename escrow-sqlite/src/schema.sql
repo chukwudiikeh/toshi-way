@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_escrow ON audit_log(escrow_id, seq);
 
+CREATE TABLE IF NOT EXISTS users (
+    id         TEXT PRIMARY KEY,
+    role       TEXT    NOT NULL,
+    token_hash TEXT    NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS node_events (
     seq                INTEGER PRIMARY KEY AUTOINCREMENT,
     escrow_id          TEXT    NOT NULL REFERENCES escrows(id),

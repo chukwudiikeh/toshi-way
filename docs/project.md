@@ -136,7 +136,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Timeout path: with no action LND auto-cancels 12 blocks before HTLC expiry and the buyer is refunded in full (see `flow.md` section 7)
 - [x] Escrow core (`escrow-core/`): state machine, timing, `LightningAdapter` + mock, `Store` + in-memory store, service logic; 27 tests passing
 - [x] Phase 2 part 2: SQLite store (`escrow-sqlite/`), LND adapter plus event and scheduler loops (`escrow-lnd/`); verified on regtest including the automatic deadline refund
-- [ ] API, frontend, hardening
+- [x] Phase 3 API (`escrow-api/`): auth, per-escrow authorization, idempotency, rate limiting, `/health`; 20 tests; both demo paths verified over HTTP on regtest (`scripts/demo.sh`)
+- [ ] Phase 4 frontend, then hardening (restricted macaroon, restart test on real node, CORS)
 
 ## Open questions
 
@@ -152,6 +153,10 @@ cargo test --workspace                                    # fast, no network nee
 ./regtest/setup.sh                                        # once, to start the regtest network
 cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests, about a minute
 cargo run -p phase1 -- both                               # the original hold-invoice demo
+
+export OPERATOR_TOKEN=$(openssl rand -hex 16)             # 24+ characters
+cargo run -p escrow-api --bin toshi-server &              # API on 127.0.0.1:3000, SQLite in ./toshi.db
+./scripts/demo.sh                                         # both demo paths over HTTP
 ```
 
 Building needs `protoc` on the PATH (the LND client generates code from protobuf files).

@@ -100,6 +100,18 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         self.store.get(id).await?.ok_or(ServiceError::NotFound)
     }
 
+    pub async fn list_active(&self) -> Result<Vec<Escrow>, ServiceError> {
+        Ok(self.store.list_active().await?)
+    }
+
+    pub async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, ServiceError> {
+        Ok(self.store.node_events(id).await?)
+    }
+
+    pub async fn node_health(&self) -> Result<(), ServiceError> {
+        Ok(self.adapter.ping().await?)
+    }
+
     /// Payment hashes of escrows whose invoice the node may still change.
     pub async fn active_payment_hashes(&self) -> Result<Vec<PaymentHash>, ServiceError> {
         Ok(self.store.list_active().await?.into_iter().filter_map(|e| e.payment_hash).collect())
