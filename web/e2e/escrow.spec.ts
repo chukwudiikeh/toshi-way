@@ -35,7 +35,23 @@ function payInvoice(invoice: string) {
 
 const stateBadge = (page: Page, label: string) => page.locator("span[title]", { hasText: label });
 
-type Party = { context: BrowserContext; page: Page; id: string; requests: { url: string; body: string | null }[] };
+const PASSWORD = "correct horse battery staple";
+
+/** Fill the two password boxes of the create-account form. */
+async function choosePassword(page: Page, password = PASSWORD) {
+  await page.getByLabel("Create a password").first().fill(password);
+  await page.getByLabel("Confirm the password").first().fill(password);
+}
+
+/** Sign in on a fresh page with a token and a new password for that device. */
+async function importToken(page: Page, token: string, password = PASSWORD) {
+  await page.getByLabel("Token", { exact: true }).fill(token);
+  await page.getByLabel("New password for this device", { exact: true }).fill(password);
+  await page.getByLabel("Confirm the new password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+}
+
+type Party = { context: BrowserContext; page: Page; id: string; token: string; requests: { url: string; body: string | null }[] };
 
 /** A fresh browser profile with a new account, recording every request it sends. */
 async function newParty(browser: Browser): Promise<Party> {
@@ -45,14 +61,17 @@ async function newParty(browser: Browser): Promise<Party> {
   page.on("request", (r) => requests.push({ url: r.url(), body: r.postData() }));
 
   await page.goto("/");
+  await choosePassword(page);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByText("Save your token now")).toBeVisible();
+  const token = (await page.locator("code").nth(0).textContent())!.trim();
   const id = (await page.locator("code").nth(1).textContent())!.trim();
+  expect(token).toMatch(/^tw_/);
   expect(id).toMatch(/^u_/);
   await page.getByLabel("I have saved my token somewhere safe").check();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
-  return { context, page, id, requests };
+  return { context, page, id, token, requests };
 }
 
 async function createEscrow(
@@ -179,12 +198,10 @@ test("an offer nobody has accepted can be withdrawn by the seller or declined by
 
 test("signing in with a token finds the account's id and role", async ({ browser }) => {
   const user = await newParty(browser);
-  const token = (await user.page.evaluate(() => localStorage.getItem("toshi.session")))!;
   const fresh = await browser.newContext();
   const page = await fresh.newPage();
   await page.goto("/");
-  await page.getByLabel("Token").fill(JSON.parse(token).token);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await importToken(page, user.token);
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
   await expect(page.getByText(user.id)).toBeVisible();
 });
@@ -208,6 +225,7 @@ test("open offer: a link anyone can open; a brand-new visitor becomes the buyer"
   const context = await browser.newContext();
   const visitor = await context.newPage();
   await visitor.goto(`/escrows/${id}`);
+  await choosePassword(visitor);
   await visitor.getByRole("button", { name: "Create account" }).click();
   await visitor.getByLabel("I have saved my token somewhere safe").check();
   await visitor.getByRole("button", { name: "Continue" }).click();
@@ -425,12 +443,11 @@ test("arbitration: an arbiter without their private key on this device cannot de
   const { arbiter, id } = await arbitratedLocked(browser, "e2e arbiter wrong device");
 
   // The same account on a browser that does not hold the private key.
-  const token = JSON.parse((await arbiter.page.evaluate(() => localStorage.getItem("toshi.session")))!).token;
+  const token = arbiter.token;
   const elsewhere = await browser.newContext();
   const page = await elsewhere.newPage();
   await page.goto("/");
-  await page.getByLabel("Token").fill(token);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await importToken(page, token);
   await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
   await page.goto(`/escrows/${id}`);
   // Already confirmed, so there is nothing to check; the point is that no private key is needed to look.
@@ -506,6 +523,7 @@ test("landing page: a visitor sees the pitch, makes an account from it without l
 
   // Making an account here signs you in at once, which swaps the page layout. The one-time screen that
   // shows the token must survive that (it once didn't: the swap rebuilt the page and lost it).
+  await choosePassword(page);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByText("Save your token now")).toBeVisible();
   await page.getByLabel("I have saved my token somewhere safe").check();
@@ -514,7 +532,7 @@ test("landing page: a visitor sees the pitch, makes an account from it without l
   await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toHaveCount(0);
 
   // Signing out goes back to the landing page.
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Lock" }).click();
   await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toBeVisible();
 });
 
@@ -608,4 +626,40 @@ test("escrow page: the progress moves, the next move changes hands, and a long d
   await expect(seller.page.getByText("Funds go to")).toBeVisible();
   await seller.page.getByText("Technical details").click();
   await expect(seller.page.getByText("Payment hash")).toBeVisible();
+});
+
+test("password vault: lock and unlock, wrong password, new device import, remove from device", async ({ browser }) => {
+  const user = await newParty(browser);
+  const { page } = user;
+
+  // The token is not sitting in plain text on the device.
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }));
+  expect(stored).not.toContain(user.token);
+
+  // Lock, then a wrong password is refused and the right one gets back in.
+  await page.getByRole("button", { name: "Lock" }).click();
+  await expect(page.getByRole("button", { name: "Unlock" })).toBeVisible();
+  await page.getByLabel("Unlock password").fill("not the password at all");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByText(/password is not right/i)).toBeVisible();
+  await page.getByLabel("Unlock password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
+
+  // The account page shows the token again only after the password.
+  await page.goto("/account");
+  await page.getByLabel("Password to show token").fill(PASSWORD);
+  await page.getByRole("button", { name: "Show my token" }).click();
+  await expect(page.getByText(user.token)).toBeVisible();
+
+  // A new device: the token plus a new password.
+  const other = await (await browser.newContext()).newPage();
+  await other.goto("/");
+  await importToken(other, user.token, "another long password here");
+  await expect(other.getByRole("heading", { name: "My escrows" })).toBeVisible();
+
+  // Remove from this device: only the token gets back in.
+  await page.getByRole("button", { name: "Remove from this device" }).click();
+  await page.getByRole("button", { name: "Remove from this device" }).last().click();
+  await expect(page.getByLabel("Token", { exact: true })).toBeVisible();
 });

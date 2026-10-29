@@ -3,14 +3,15 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { NewUser } from "@/lib/schemas";
-import { useSession } from "@/lib/session";
+import { useSession, useVaultState } from "@/lib/session";
 import { TokenReveal } from "./Account";
 import { Dashboard } from "./dashboard/Dashboard";
 import { Landing } from "./landing/Landing";
-import { Card } from "./ui";
+import { Card, Notice } from "./ui";
 
 export function Home() {
   const session = useSession();
+  const vault = useVaultState();
   const [created, setCreated] = useState<NewUser | null>(null);
 
   if (session === undefined) return null;
@@ -39,5 +40,18 @@ export function Home() {
     );
   }
 
-  return <Dashboard session={session} />;
+  return (
+    <div className="space-y-6">
+      {vault === "unprotected" && (
+        <Notice tone="warn">
+          This account is saved on this device without a password.{" "}
+          <Link href="/account" className="font-semibold underline">
+            Protect it with a password
+          </Link>
+          .
+        </Notice>
+      )}
+      <Dashboard session={session} />
+    </div>
+  );
 }

@@ -18,7 +18,7 @@ import {
   NewUser,
   type NewEscrowRequest,
 } from "./schemas";
-import { clearSession, getSession } from "./session";
+import { getSession, removeVault } from "./session";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:3000").replace(/\/+$/, "");
 
@@ -75,7 +75,7 @@ async function request<T>(method: string, path: string, schema: z.ZodType<T>, op
     const code = parsed.success ? parsed.data.error.code : `http_${res.status}`;
     const message = parsed.success ? parsed.data.error.message : `Unexpected response (HTTP ${res.status})`;
     const retry = Number(res.headers.get("Retry-After"));
-    if (res.status === 401 && token && !opts.keepSessionOn401 && token === getSession()?.token) clearSession();
+    if (res.status === 401 && token && !opts.keepSessionOn401 && token === getSession()?.token) removeVault();
     throw new ApiError(code, message, res.status, Number.isFinite(retry) && retry > 0 ? retry : null);
   }
 
