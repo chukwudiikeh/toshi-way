@@ -3,7 +3,8 @@
 //! `run_event_loop` watches every open escrow's invoice, on whichever node serves that escrow's
 //! seller, and feeds each state change into the service as it happens. It also runs `reconcile` at start and periodically, so anything missed
 //! while disconnected is caught. `run_scheduler` calls `tick` so holds are cancelled at their
-//! deadline with no human action.
+//! deadline with no human action. `run_payouts` settles withdrawals from what the paying node reports
+//! and moves naira ramp orders on.
 
 use std::{
     collections::HashMap,
@@ -14,8 +15,10 @@ use std::{
 use escrow_core::{
     adapter::NodeDirectory,
     model::{InvoiceEvent, NodeInvoiceState, PaymentHash},
+    payout::PayoutService,
+    ramp::RampService,
     service::EscrowService,
-    store::Store,
+    store::{PayoutStore, Store},
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::MissedTickBehavior};
 
@@ -168,6 +171,52 @@ pub async fn run_scheduler<D: NodeDirectory, S: Store>(
                         }
                     }
                     Err(e) => tracing::error!(error = %e, "scheduler pass failed"),
+                }
+            }
+        }
+    }
+}
+
+/// Keep withdrawals and ramp orders in step with the nodes and the ramp provider. Withdrawals are
+/// synced first, so an off-ramp sees its sats arrive in the same pass. Runs until `shutdown` completes.
+pub async fn run_payouts<S: Store + PayoutStore>(
+    payouts: Option<&PayoutService<S>>,
+    ramp: Option<&RampService<S>>,
+    every: Duration,
+    shutdown: impl Future<Output = ()>,
+) {
+    tokio::pin!(shutdown);
+    let mut ticker = tokio::time::interval(every);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return,
+            _ = ticker.tick() => {
+                if let Some(p) = payouts {
+                    match p.sync(unix_now()).await {
+                        Ok(r) => {
+                            if !r.finished.is_empty() {
+                                tracing::info!(finished = r.finished.len(), "withdrawals settled");
+                            }
+                            for (id, err) in r.errors {
+                                tracing::warn!(withdrawal = %id, %err, "could not check a withdrawal");
+                            }
+                        }
+                        Err(e) => tracing::error!(error = %e, "withdrawal sync failed"),
+                    }
+                }
+                if let Some(r) = ramp {
+                    match r.tick(unix_now()).await {
+                        Ok(report) => {
+                            for (id, state) in report.advanced {
+                                tracing::info!(order = %id, state = state.as_str(), "ramp order moved on");
+                            }
+                            for (id, err) in report.errors {
+                                tracing::warn!(order = %id, %err, "ramp order could not move on");
+                            }
+                        }
+                        Err(e) => tracing::error!(error = %e, "ramp pass failed"),
+                    }
                 }
             }
         }

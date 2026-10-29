@@ -8,6 +8,8 @@ pub mod adapter;
 pub mod fiat;
 pub mod mock;
 pub mod model;
+pub mod payout;
+pub mod ramp;
 pub mod service;
 pub mod state;
 pub mod store;

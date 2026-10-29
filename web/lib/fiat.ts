@@ -11,6 +11,12 @@ export function valueOfSats(sats: number, rateMinorPerBtc: number): number {
   return Number((scaled + SATS_PER_BTC / TWO) / SATS_PER_BTC);
 }
 
+/** How many sats are worth `amountMinor` at `rateMinorPerBtc`, rounded half up: the inverse of `valueOfSats`. */
+export function satsForValue(amountMinor: number, rateMinorPerBtc: number): number {
+  const rate = BigInt(rateMinorPerBtc);
+  return Number((BigInt(amountMinor) * SATS_PER_BTC + rate / TWO) / rate);
+}
+
 /** Format an amount in a currency's minor unit, for example (325, "USD", 2) -> "$3.25". */
 export function formatFiat(amountMinor: number, currency: string, exponent: number): string {
   const major = amountMinor / 10 ** exponent;

@@ -4,14 +4,21 @@ import { useState } from "react";
 import { checkPassword, MIN_PASSWORD_LENGTH, strengthLabels } from "@/lib/vault";
 import { Field, inputClass } from "./ui";
 
-/** State for choosing a new password: the two boxes, and whether they are acceptable. */
-export function useNewPassword() {
+/**
+ * State for choosing a new password: the two boxes, and whether they are acceptable. `onEdit` runs when
+ * either box changes, so a form can clear an error that no longer applies.
+ */
+export function useNewPassword(onEdit?: () => void) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const edit = (set: (value: string) => void) => (value: string) => {
+    set(value);
+    onEdit?.();
+  };
   const check = checkPassword(password);
   /** Why the password cannot be used yet, or null when it can. Show it only after an attempt. */
   const problem = !check.ok ? check.message : confirm !== password ? "The two passwords are different." : null;
-  return { password, setPassword, confirm, setConfirm, check, problem, reset: () => (setPassword(""), setConfirm("")) };
+  return { password, setPassword: edit(setPassword), confirm, setConfirm: edit(setConfirm), check, problem, reset: () => (setPassword(""), setConfirm("")) };
 }
 
 const bar = ["bg-neutral-300 dark:bg-neutral-700", "bg-red-500", "bg-amber-500", "bg-lime-500", "bg-emerald-500"];
