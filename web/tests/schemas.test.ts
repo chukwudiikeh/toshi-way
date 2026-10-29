@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Escrow, EscrowEvents, NewEscrowForm, SecretInput } from "@/lib/schemas";
+import { Escrow, EscrowEvents, NewEscrowForm, NodeForm, NodeInfo, SecretInput } from "@/lib/schemas";
 
 // The sample from docs/brief.md.
 const sample = {
@@ -95,5 +95,40 @@ describe("SecretInput", () => {
     expect(SecretInput.parse(` ${"A".repeat(64)} `)).toBe("a".repeat(64));
     expect(SecretInput.safeParse("123456").success).toBe(false);
     expect(SecretInput.safeParse("a".repeat(63)).success).toBe(false);
+  });
+});
+
+describe("seller node", () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
+  const good = { address: "https://mynode.example.com:10009", tls_cert: pem, macaroon: "0201036C6E64" };
+
+  it("accepts a node address, certificate and hex macaroon, and lowercases the hex", () => {
+    const parsed = NodeForm.parse({ ...good, address: "  https://mynode.example.com:10009 " });
+    expect(parsed.macaroon).toBe("0201036c6e64");
+    expect(parsed.address).toBe("https://mynode.example.com:10009");
+  });
+
+  it.each([
+    ["an http address", { address: "http://mynode.example.com:10009" }],
+    ["an address with no port", { address: "https://mynode.example.com" }],
+    ["an address with a path", { address: "https://mynode.example.com:10009/x" }],
+    ["an address with credentials", { address: "https://user@mynode.example.com:10009" }],
+    ["a certificate that is not PEM", { tls_cert: "hello" }],
+    ["a macaroon that is not hex", { macaroon: "not hex!" }],
+    ["an odd-length macaroon", { macaroon: "abc" }],
+    ["an empty macaroon", { macaroon: "" }],
+  ])("rejects %s", (_, patch) => {
+    expect(NodeForm.safeParse({ ...good, ...patch }).success).toBe(false);
+  });
+
+  it("reads the node status the API sends", () => {
+    const info = { mode: "own", address: "https://n:1", connected_at: 5, shared_available: false, own_nodes_enabled: true, can_change: true };
+    expect(NodeInfo.parse(info).mode).toBe("own");
+    expect(NodeInfo.safeParse({ ...info, mode: "weird" }).success).toBe(false);
+  });
+
+  it("treats an escrow with no seller_node as served by the shared node", () => {
+    expect(Escrow.parse(sample).seller_node).toBe("shared");
+    expect(Escrow.parse({ ...sample, seller_node: "own" }).seller_node).toBe("own");
   });
 });

@@ -124,6 +124,18 @@ function Summary({ escrow }: { escrow: NonNullable<ReturnType<typeof useEscrow>[
       </div>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
         <div>
+          <dt className="text-neutral-500">Funds go to</dt>
+          <dd className="text-sm font-medium">
+            {escrow.seller_node === "own" ? (
+              <span className="text-emerald-700 dark:text-emerald-400">The seller&apos;s own node</span>
+            ) : (
+              <span className="text-amber-700 dark:text-amber-400" title="The service receives the sats and owes them to the seller">
+                The service&apos;s shared node (custodial)
+              </span>
+            )}
+          </dd>
+        </div>
+        <div>
           <dt className="text-neutral-500">Amount</dt>
           <dd className="font-mono text-lg font-semibold tabular-nums">{formatSats(escrow.amount_sats)}</dd>
         </div>

@@ -39,6 +39,11 @@ export const Escrow = z.object({
   created_at: unixSecs,
   updated_at: unixSecs,
   your_role: z.enum(["buyer", "seller", "operator"]),
+  /**
+   * Whose Lightning node holds the invoice. "own": the seller's, so a release pays the seller
+   * directly. "shared": the service's, so the service receives the sats and owes them to the seller.
+   */
+  seller_node: z.enum(["own", "shared"]).default("shared"),
 });
 export type Escrow = z.infer<typeof Escrow>;
 
@@ -65,6 +70,35 @@ export type Invoice = z.infer<typeof Invoice>;
 
 export const Me = z.object({ id: z.string().min(1), role: z.string() });
 export type Me = z.infer<typeof Me>;
+
+export const NodeInfo = z.object({
+  mode: z.enum(["own", "shared", "none"]),
+  address: z.string().nullable(),
+  connected_at: unixSecs.nullable(),
+  shared_available: z.boolean(),
+  own_nodes_enabled: z.boolean(),
+  can_change: z.boolean(),
+});
+export type NodeInfo = z.infer<typeof NodeInfo>;
+
+/** What a seller pastes to connect their own node. */
+export const NodeForm = z.object({
+  address: z
+    .string()
+    .trim()
+    .regex(/^https:\/\/[^\s/?#@]+:\d{1,5}$/, "Use https://host:port, for example https://mynode.example.com:10009"),
+  tls_cert: z
+    .string()
+    .trim()
+    .refine((v) => v.startsWith("-----BEGIN CERTIFICATE-----"), "Paste the certificate text, starting with -----BEGIN CERTIFICATE-----"),
+  macaroon: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^(?:[0-9a-f]{2})+$/, "The macaroon is hex text (see the command above)")
+    .max(4096, "That is too long to be a macaroon"),
+});
+export type NodeForm = z.infer<typeof NodeForm>;
 
 export const NewUser = z.object({ id: z.string().min(1), role: z.string(), token: z.string().min(1) });
 export type NewUser = z.infer<typeof NewUser>;

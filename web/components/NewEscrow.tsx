@@ -1,9 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
-import { MAX_DESCRIPTION, NewEscrowForm } from "@/lib/schemas";
+import { MAX_DESCRIPTION, NewEscrowForm, type NodeInfo } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
 import { Button, Card, Field, inputClass, Notice, Spinner } from "./ui";
@@ -36,6 +37,17 @@ export function NewEscrow() {
   // One key per submission: retrying the same values reuses it, so a lost response can't create a
   // second escrow. Editing the form starts a new submission.
   const idempotencyKey = useRef<string | null>(null);
+  const [node, setNode] = useState<NodeInfo | null>(null);
+
+  useEffect(() => {
+    if (!session || session.kind !== "user") return;
+    let alive = true;
+    // If this fails the server still answers "no_node" when it matters, so just carry on.
+    api.node().then((n) => alive && setNode(n)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [session]);
 
   if (session === undefined) return <Spinner />;
   if (!session) return <SignIn note="Sign in as the seller to create an escrow." />;
@@ -89,6 +101,22 @@ export function NewEscrow() {
           the release secret, or until the hold time runs out and they are refunded.
         </p>
       </div>
+      {node?.mode === "none" && (
+        <Notice tone="warn">
+          You need to <Link href="/node" className="font-semibold underline">connect your Lightning node</Link> before
+          you can create an escrow: this service doesn&apos;t hold sellers&apos; money.
+        </Notice>
+      )}
+      {node?.mode === "shared" && (
+        <Notice tone="info">
+          No node of yours is connected, so this escrow will use the service&apos;s shared node: the service receives
+          the sats on release and owes them to you.{" "}
+          <Link href="/node" className="font-semibold underline">
+            Connect your own node
+          </Link>{" "}
+          to be paid directly.
+        </Notice>
+      )}
       <Card>
         <form onSubmit={submit} className="space-y-4" noValidate>
           <Field
@@ -151,7 +179,7 @@ export function NewEscrow() {
             </div>
           </Field>
           {formError && <Notice tone="error">{formError}</Notice>}
-          <Button type="submit" busy={busy}>
+          <Button type="submit" busy={busy} disabled={node?.mode === "none"}>
             Create escrow
           </Button>
         </form>
