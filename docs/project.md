@@ -130,7 +130,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 
 - [x] PRD drafted
 - [x] Regtest network: 3 LND nodes, channels open, routed payment verified, `addholdinvoice` verified
-- [ ] Phase 1 Rust program: hold invoice → pay → accepted → settle / cancel
+- [x] Phase 1 Rust program (`phase1/`): hold invoice → pay → accepted → settle / cancel, both verified
+- [ ] Timeout path: HTLC expiry with no action, CLTV/expiry values recorded
 - [ ] Escrow core, API, frontend, hardening
 
 ## Open questions

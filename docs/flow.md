@@ -42,6 +42,49 @@ Nothing here has been committed to git yet.
 
 ---
 
+## 6. Built and ran Phase 1 (`phase1/`)
+
+A Cargo workspace (`Cargo.toml`) with one binary crate, `phase1`. Run it with `cargo run -p phase1 -- [settle|cancel|both]` after `./regtest/setup.sh`.
+
+What it does: one program plays buyer and seller against the real LND nodes. The buyer side generates a random 32-byte `P` and `H = sha256(P)`. The seller node creates a hold invoice for `H` (1000 sats). The buyer node pays it through the router in a background task. The program watches the seller's invoice stream and waits for `ACCEPTED`, then either settles with `P` (after re-checking `sha256(P) == H`) or cancels. It then checks the payment status and channel balances.
+
+Build notes:
+
+- `tonic_lnd` 0.5.1 only exposes the lightning, wallet, signer and peers services, so it has no invoices or router. Switched to `fedimint-tonic-lnd` 0.4 with the `invoicesrpc` and `routerrpc` features.
+- Its build needs `protoc`, which wasn't installed. Put protoc 28.3 in `~/.local/bin` (no sudo).
+- The first run panicked because rustls had no crypto provider selected. Added `rustls` with the `ring` feature and installed it at startup.
+
+### Results (both scenarios pass)
+
+Settle path:
+
+| Step | Seller invoice | Buyer payment | Buyer / seller balance |
+|------|---------------|---------------|------------------------|
+| before | - | - | 395528 / 101000 |
+| paid, held | `OPEN` then `ACCEPTED` | in flight | 394097 / 101000 |
+| settled with `P` | `SETTLED` | `Succeeded` | 394527 / 102000 |
+
+Cancel path:
+
+| Step | Seller invoice | Buyer payment | Buyer / seller balance |
+|------|---------------|---------------|------------------------|
+| before | - | - | 394527 / 102000 |
+| paid, held | `OPEN` then `ACCEPTED` | in flight | 393096 / 102000 |
+| cancelled | `CANCELED` | `Failed` (reason 4, incorrect payment details) | 394527 / 102000 |
+
+### What this tells us
+
+- The lock is real: while the invoice is `ACCEPTED` the buyer's balance has already dropped and the seller's has not moved. The money is committed but not spent.
+- Settle works: the seller gains exactly 1000 sats and the buyer pays 1000 plus a 1-sat routing fee.
+- Cancel refunds in full: the buyer's balance returns exactly to its starting value, fee included, and the seller is unchanged.
+- The node's invoice stream emits states in the order `OPEN`, `ACCEPTED`, then `SETTLED` or `CANCELED`. The Lightning adapter and the escrow state machine should be driven by these events.
+- A cancelled hold shows up on the buyer side as a failed payment with `FAILURE_REASON_INCORRECT_PAYMENT_DETAILS`. The core should treat that as the refund signal, not as an error.
+- The balance seen by the buyer while held is about 430 sats lower than the final cost. Part of that is channel reserve and commitment fee accounting, not payment. Don't use the buyer's channel balance as proof of lock; use the invoice state.
+
+Not yet tested: the timeout path where nobody acts and the HTLC expires on its own (needs mined blocks), hold behaviour across a node restart, and wrong-preimage handling.
+
+---
+
 ## Next
 
-Phase 1 Rust program: create a hold invoice for a known hash on `seller`, pay it from `buyer`, observe the `ACCEPTED` state, then settle with the preimage. Repeat with cancel to confirm the buyer is refunded.
+Test the timeout path on regtest (mine blocks past the HTLC expiry, record the CLTV and expiry values to use), then start Phase 2: the escrow core behind a `LightningAdapter` trait, the state machine and the database schema.
