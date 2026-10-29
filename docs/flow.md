@@ -85,6 +85,36 @@ Not yet tested: the timeout path where nobody acts and the HTLC expires on its o
 
 ---
 
+## 7. Timeout path (`phase1 -- timeout`)
+
+Added a `timeout` mode to `phase1`. It creates a hold invoice with a small `cltv_expiry` (24), pays it, waits for `ACCEPTED`, then takes **no action** and mines one block at a time (via `docker compose exec bitcoind bitcoin-cli -generate`) until the invoice changes state.
+
+Result:
+
+| Measurement | Value |
+|-------------|-------|
+| Invoice `cltv_expiry` requested | 24 blocks |
+| Height when locked | 119 |
+| HTLC `expiry_height` reported by the node | 146 (27 blocks out, so the payer adds about 3 blocks on top of the invoice's final delta) |
+| Height when the node auto-cancelled | 134 (15 blocks after lock) |
+| Margin before HTLC expiry at cancel | 12 blocks |
+| Seller invoice | `OPEN`, `ACCEPTED`, `CANCELED` |
+| Buyer payment | `Failed` (reason 4), same as an explicit cancel |
+| Balances | buyer 394527 -> 394527, seller 102000 -> 102000 (full refund, seller untouched) |
+
+### What this tells us
+
+- The refund path needs no human action and no service action: if nobody settles, LND cancels the hold itself and the payment fails back. This is the proof the PRD asks for.
+- LND cancels **12 blocks before the HTLC expires**. That is its hold-expiry margin (`invoices.holdexpirydelta`, default 12), not something we set. It protects the channel from a force-close.
+- So the usable hold window is roughly `final_cltv_delta + ~3 - 12` blocks. With the default final delta of 80 that is about 71 blocks, or around 12 hours at ten minutes per block. A "day or two" hold is not achievable with defaults; the PRD's maximum hold time should be set from this.
+- The service's own deadline must fire **before** LND's auto-cancel, i.e. earlier than `expiry_height - 12`, and the settle-by time must leave room for the seller to settle after receiving `P`. Suggested rule: `settle_by = expiry_height - 12 - safety_margin` (for example 6 more blocks), converted to wall-clock time conservatively.
+- Cancel-by-timeout and cancel-by-request look identical to the buyer (failed payment, reason 4), so the core must use the invoice state, not the payment error, to know why it ended.
+- Regtest blocks are mined on demand, so these are block counts, not times. Wall-clock hold times only mean something on a network with real block times.
+
+Still untested: hold behaviour across a node restart, a wrong preimage, and a real wallet as the payer.
+
+---
+
 ## Next
 
-Test the timeout path on regtest (mine blocks past the HTLC expiry, record the CLTV and expiry values to use), then start Phase 2: the escrow core behind a `LightningAdapter` trait, the state machine and the database schema.
+Start Phase 2: the escrow core behind a `LightningAdapter` trait (with a mock), the state machine, and the database schema. Derive `settle_by` and the maximum hold time from the numbers above.
