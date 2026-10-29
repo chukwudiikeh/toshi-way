@@ -506,6 +506,33 @@ Smaller things the screenshots and dev tooling found: the closing section's whit
 
 ---
 
+## 23. A dashboard for signed-in users
+
+Signing in used to land on a plain list of escrows. It now lands on a dashboard (`web/components/dashboard/`). The reference page you pointed to (vaultion.org/dashboard) only exposes its title ("My Escrows - Dashboard") until a wallet connects, so there was no layout to copy; this is designed from what our users need, in the landing page's visual style.
+
+**What is on it.**
+- Four stat cards: *Needs you* (highlighted when non-zero), *Locked now* (with how much is out as a buyer and in as a seller), *Completed* (sats received and paid) and *Refunded*.
+- **Needs your attention:** only the escrows where *you* hold the next move, most urgent first, each with what to do, why, your role and the time left (red under ten minutes). Empty state: "You're all caught up."
+- **My escrows:** Active / Completed / All tabs with counts, role filter chips (shown only for roles you have), and for each escrow its role, what happens next in one line, amount (with the fiat value if there is one), status and time left or time ago.
+- Side panels: your user id (copyable), Lightning node status (own, shared or none, with a link), arbiter status, and recent activity.
+- A "Get started" card for an account with no escrows yet. The header link "My escrows" is now "Dashboard"; the page is wider than the rest of the app and the header lines up with it.
+
+**Decisions.**
+- *No backend change.* Everything is derived from `GET /api/v1/escrows`, `/me/node` and `/me/arbiter-key`, all of which already existed. The derivation is a pure module (`web/lib/dashboard.ts`) with 17 unit tests, because "whose move is it" is where being wrong would mislead people: a buyer with an unpaid invoice needs to act, a seller waiting for that payment does not; a seller with locked funds should deliver (and is warned to wait if an arbiter hasn't confirmed); an arbiter has a move when a sealed secret needs confirming or a dispute needs deciding. Nothing is anyone's move once an escrow has ended or its deadline has passed.
+- *Only money you are a party to counts.* An arbiter's escrows are not their funds, so they are left out of "Locked now", "Completed" sats and "Refunded" sats.
+- *The server still decides what is true.* The dashboard only decides what to show and in what order; it polls every five seconds, like the escrow page.
+
+**Found while building it.** The first phone screenshot was 451 px wide on a 390 px screen: a page-level horizontal scroll. The cause is that on small screens a CSS grid's implicit column sizes to its content, so one long non-wrapping line in the attention list stretched the whole column. The fix is `grid-cols-1` (a `minmax(0, 1fr)` column) plus `min-w-0` on the grid children. The phone view also hid the countdown, which is the most urgent thing in the attention list; it now shows inline on a phone. In the browser test, two selectors matched twice, because the "Get started" card and the table both say "no escrows yet" and the helper assumed the seller's tab was on the escrow page; neither was a page bug.
+
+**Verified.** 113 unit tests (17 new), build, lint, and 13 browser tests (one new, covering an empty account, an offer being the buyer's move and not the seller's, accepting and paying turning it into a locked escrow with a move for each side, the stat figures, the tabs and opening a row). The 3-scene rehearsal passes. Checked in screenshots at desktop and phone width, light and dark, with a seeded mix of states and with a brand-new account.
+
+**Limits.**
+- The list endpoint returns at most the newest 100 escrows, so the totals ("Completed", "Received 26,000 sats") are over those 100. A server-side summary endpoint would fix that for heavy users.
+- Operators still get the small card with a link to their queue, not a dashboard of their own.
+- Polling rather than push, and no search box yet.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

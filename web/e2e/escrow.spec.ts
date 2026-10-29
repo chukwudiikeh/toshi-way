@@ -495,7 +495,7 @@ test("landing page: a visitor sees the pitch, makes an account from it without l
     await expect(page.getByRole("heading", { name: heading })).toBeAttached();
   }
   // No app chrome on the landing page: it has its own navigation.
-  await expect(page.getByRole("link", { name: "My escrows" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 
   // The calls to action lead to the forms.
   await page.getByRole("link", { name: "Get started" }).first().click();
@@ -513,4 +513,50 @@ test("landing page: a visitor sees the pitch, makes an account from it without l
   // Signing out goes back to the landing page.
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { level: 1, name: /nobody holds the money/i })).toBeVisible();
+});
+
+test("dashboard: shows whose move it is, what is locked, and lets you filter your escrows", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  // A new account has nothing yet, and is told how to start.
+  await seller.page.goto("/");
+  await expect(seller.page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
+  await expect(seller.page.getByText("You're all caught up.")).toBeVisible();
+  await expect(seller.page.getByRole("heading", { name: "Get started" })).toBeVisible();
+  await expect(seller.page.getByText("No escrows yet.", { exact: true })).toBeVisible();
+
+  // The seller makes an offer for the buyer. It is the buyer's move, not the seller's.
+  const id = await createEscrow(seller, buyer.id, "e2e dashboard parcel", ["30", "minutes"]);
+  await buyer.page.goto("/");
+  const attention = buyer.page.getByRole("region", { name: "Needs your attention" });
+  await expect(attention.getByText("Accept this offer")).toBeVisible();
+  await expect(attention.getByText("e2e dashboard parcel")).toBeVisible();
+  await seller.page.goto("/");
+  await expect(seller.page.getByText("You're all caught up.")).toBeVisible();
+  await expect(seller.page.getByText("Waiting for the buyer to accept")).toBeVisible();
+  await expect(seller.page.getByRole("heading", { name: "Get started" })).toHaveCount(0);
+
+  // The buyer accepts and pays: now the funds are locked, and both have a move to make.
+  await seller.page.goto(`/escrows/${id}`); // the helper watches the seller's escrow page flip to locked
+  await acceptAndPay(buyer, seller, id);
+  await buyer.page.goto("/");
+  await expect(buyer.page.getByRole("region", { name: "Needs your attention" }).getByText("Release when you have the goods")).toBeVisible();
+  await expect(buyer.page.getByText("1 escrow · 1,000 sats out")).toBeVisible();
+  await seller.page.goto("/");
+  await expect(seller.page.getByRole("region", { name: "Needs your attention" }).getByText("Deliver, then release with the buyer's secret")).toBeVisible();
+  await expect(seller.page.getByText("1 escrow · 1,000 sats in")).toBeVisible();
+
+  // The tabs split active from completed; nothing has finished yet.
+  const table = seller.page.getByRole("region", { name: "My escrows" });
+  await expect(table.getByText("e2e dashboard parcel")).toBeVisible();
+  await expect(table.getByRole("tab", { name: /Active/ })).toHaveAttribute("aria-selected", "true");
+  await table.getByRole("tab", { name: /Completed/ }).click();
+  await expect(table.getByText("Nothing completed yet.")).toBeVisible();
+  await table.getByRole("tab", { name: /All/ }).click();
+  await expect(table.getByText("e2e dashboard parcel")).toBeVisible();
+
+  // A row opens the escrow.
+  await table.getByText("e2e dashboard parcel").click();
+  await seller.page.waitForURL(new RegExp(`/escrows/${id}$`));
 });
