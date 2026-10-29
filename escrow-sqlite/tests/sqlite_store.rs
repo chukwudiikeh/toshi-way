@@ -1,0 +1,100 @@
+use std::sync::Arc;
+
+use escrow_core::{
+    mock::MockLightning,
+    model::{NodeInvoiceState, Preimage},
+    service::{EscrowService, NewEscrow},
+    state::EscrowState,
+    store::Store,
+    testing::store_contract,
+    timing::TimingConfig,
+};
+use escrow_sqlite::SqliteStore;
+
+const T0: i64 = 1_000_000;
+
+#[tokio::test]
+async fn sqlite_store_meets_the_store_contract() {
+    store_contract(&SqliteStore::in_memory().await.unwrap()).await;
+}
+
+fn temp_db(name: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("escrow-sqlite-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("escrow.db").to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn full_flow_survives_a_restart_on_a_real_database_file() {
+    let path = temp_db("restart");
+    let node = MockLightning::new();
+    let p = Preimage::from_bytes([5; 32]);
+
+    // First run: create, issue the invoice, then the buyer pays while we are "down".
+    let id = {
+        let store = Arc::new(SqliteStore::open(&path).await.unwrap());
+        let svc = EscrowService::new(node.clone(), store, TimingConfig::default());
+        let e = svc
+            .create(
+                NewEscrow {
+                    buyer_id: "buyer".into(),
+                    seller_id: "seller".into(),
+                    amount_sats: 1000,
+                    description: "parcel".into(),
+                    deadline_at: T0 + 3600,
+                },
+                T0,
+            )
+            .await
+            .unwrap();
+        svc.accept(&e.id, p.hash(), "buyer", T0).await.unwrap();
+        e.id
+    };
+    node.pay(&p.hash());
+
+    // Second run: reopen the same file, reconcile against the node, then settle.
+    let store = Arc::new(SqliteStore::open(&path).await.unwrap());
+    let svc = EscrowService::new(node.clone(), store.clone(), TimingConfig::default());
+    assert_eq!(svc.get(&id).await.unwrap().state, EscrowState::InvoiceIssued);
+
+    let report = svc.reconcile(T0 + 30).await.unwrap();
+    assert_eq!(report.changed, vec![id.clone()]);
+    assert_eq!(svc.get(&id).await.unwrap().state, EscrowState::Locked);
+
+    let e = svc.release(&id, &p, "seller", T0 + 60).await.unwrap();
+    assert_eq!(e.state, EscrowState::Settled);
+    assert_eq!(node.state(&p.hash()), Some(NodeInvoiceState::Settled));
+
+    let log = svc.audit_log(&id).await.unwrap();
+    assert_eq!(log.len(), 3);
+    assert_eq!(log.last().unwrap().to_state, EscrowState::Settled);
+    assert!(store.list_active().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn two_escrows_cannot_share_a_payment_hash_even_around_the_service() {
+    let store = SqliteStore::in_memory().await.unwrap();
+    let svc = EscrowService::new(MockLightning::new(), Arc::new(store), TimingConfig::default());
+    let new = || NewEscrow {
+        buyer_id: "b".into(),
+        seller_id: "s".into(),
+        amount_sats: 1,
+        description: "x".into(),
+        deadline_at: T0 + 3600,
+    };
+    let (a, b) = (svc.create(new(), T0).await.unwrap(), svc.create(new(), T0).await.unwrap());
+    let h = Preimage::from_bytes([1; 32]).hash();
+    svc.accept(&a.id, h, "b", T0).await.unwrap();
+    assert!(svc.accept(&b.id, h, "b", T0).await.is_err());
+}
+
+#[tokio::test]
+async fn the_database_has_no_place_to_keep_a_preimage() {
+    let path = temp_db("schema");
+    let store = SqliteStore::open(&path).await.unwrap();
+    drop(store);
+    let schema = include_str!("../src/schema.sql").to_lowercase();
+    assert!(!schema.contains("preimage"));
+    assert!(!schema.contains("secret"));
+}

@@ -84,6 +84,27 @@ pub struct NodeInvoice {
     pub htlc_expiry_height: Option<u32>,
 }
 
+/// A node report about an escrow's invoice, kept for the audit trail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeEventRecord {
+    pub escrow_id: String,
+    pub node_invoice_state: NodeInvoiceState,
+    /// Hash of the raw event, so repeats can be recognised without storing the payload.
+    pub raw_event_hash: String,
+    pub received_at: i64,
+}
+
+impl NodeInvoiceState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "OPEN",
+            Self::Accepted => "ACCEPTED",
+            Self::Settled => "SETTLED",
+            Self::Canceled => "CANCELED",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvoiceEvent {
     pub payment_hash: PaymentHash,

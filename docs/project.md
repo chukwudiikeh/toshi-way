@@ -59,7 +59,7 @@ States: `CREATED`, `INVOICE_ISSUED`, `LOCKED`, `SETTLED`, `REFUNDED`, `EXPIRED_U
 
 - **Backend:** Rust, Axum, Tokio.
 - **Node:** LND over gRPC (invoices and router services), behind a `LightningAdapter` trait so core logic is testable with a mock.
-- **Database:** PostgreSQL via SQLx (escrows, node events, audit log). May be simplified to SQLite for the hackathon.
+- **Database:** SQLite via SQLx for now (escrows, node events, audit log), behind the `Store` trait. PostgreSQL later by adding a crate that passes the same store contract tests.
 - **Frontend:** Next.js, TypeScript, Tailwind, Zod.
 - **Modules:** web client, API layer, escrow core (state machine, idempotency), Lightning adapter, persistence, deadline scheduler.
 
@@ -135,7 +135,7 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Phase 1 Rust program (`phase1/`): hold invoice → pay → accepted → settle / cancel, both verified
 - [x] Timeout path: with no action LND auto-cancels 12 blocks before HTLC expiry and the buyer is refunded in full (see `flow.md` section 7)
 - [x] Escrow core (`escrow-core/`): state machine, timing, `LightningAdapter` + mock, `Store` + in-memory store, service logic; 27 tests passing
-- [ ] Phase 2 part 2: real LND adapter, SQL store, event/scheduler loop
+- [x] Phase 2 part 2: SQLite store (`escrow-sqlite/`), LND adapter plus event and scheduler loops (`escrow-lnd/`); verified on regtest including the automatic deadline refund
 - [ ] API, frontend, hardening
 
 ## Open questions
@@ -144,3 +144,14 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - Who owns the seller's node: the seller, or the service (hosted)?
 - Regtest only, or signet/testnet with real wallets?
 - Maximum supported hold time on the target network and node settings.
+
+## Running the tests
+
+```bash
+cargo test --workspace                                    # fast, no network needed
+./regtest/setup.sh                                        # once, to start the regtest network
+cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests, about a minute
+cargo run -p phase1 -- both                               # the original hold-invoice demo
+```
+
+Building needs `protoc` on the PATH (the LND client generates code from protobuf files).

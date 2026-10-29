@@ -1,0 +1,17 @@
+[package]
+name = "escrow-lnd"
+version = "0.1.0"
+edition = "2021"
+description = "LND implementation of escrow-core's LightningAdapter, plus the event and scheduler loops"
+
+[dependencies]
+async-trait = "0.1"
+escrow-core = { path = "../escrow-core" }
+fedimint-tonic-lnd = { version = "0.4", features = ["invoicesrpc", "routerrpc"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+escrow-sqlite = { path = "../escrow-sqlite" }
+rand = "0.8"

@@ -1,11 +1,14 @@
 //! The escrow service. Payment state comes only from the node: every move to LOCKED, SETTLED,
 //! REFUNDED or EXPIRED_UNPAID is driven by a node event or a node lookup, never by a caller's claim.
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
     adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
-    model::{AuditEntry, Escrow, InvoiceEvent, NodeInvoiceState, PaymentHash, Preimage},
+    model::{
+        AuditEntry, Escrow, InvoiceEvent, NodeEventRecord, NodeInvoiceState, PaymentHash, Preimage,
+    },
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError},
     timing::{TimingConfig, TimingError},
@@ -97,6 +100,11 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         self.store.get(id).await?.ok_or(ServiceError::NotFound)
     }
 
+    /// Payment hashes of escrows whose invoice the node may still change.
+    pub async fn active_payment_hashes(&self) -> Result<Vec<PaymentHash>, ServiceError> {
+        Ok(self.store.list_active().await?.into_iter().filter_map(|e| e.payment_hash).collect())
+    }
+
     pub async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, ServiceError> {
         Ok(self.store.audit_log(id).await?)
     }
@@ -174,6 +182,15 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         let Some(e) = self.store.get_by_hash(&ev.payment_hash).await? else {
             return Ok(None);
         };
+        let raw = format!("{}:{}", hex::encode(ev.payment_hash), ev.state.as_str());
+        self.store
+            .record_node_event(NodeEventRecord {
+                escrow_id: e.id.clone(),
+                node_invoice_state: ev.state,
+                raw_event_hash: hex::encode(Sha256::digest(raw)),
+                received_at: now,
+            })
+            .await?;
         Ok(Some(self.apply_node_state(e, ev.state, "node", "node invoice event", now).await?))
     }
 
