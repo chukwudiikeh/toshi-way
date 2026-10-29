@@ -110,10 +110,20 @@ start_server() {
   wait_http server "$API/health" 40
 }
 
+# In a Codespace the page is opened through a forwarded address, not localhost. The demo wallet only
+# answers requests from the web app, so tell it that address as well.
+public_origin() {
+  if [ -n "${CODESPACE_NAME:-}" ] && [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
+    echo "https://${CODESPACE_NAME}-3001.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+  fi
+}
+
 start_wallet() {
   say "demo wallet on $WALLET"
   if up_http "$WALLET/health"; then say "already running"; return; fi
-  ( exec node scripts/demo-wallet.mjs ) > "$DEMO/wallet.log" 2>&1 < /dev/null &
+  local origins="http://localhost:3001,http://127.0.0.1:3001"
+  [ -n "$(public_origin)" ] && origins="$origins,$(public_origin)"
+  ( exec env DEMO_WALLET_ORIGINS="$origins" node scripts/demo-wallet.mjs ) > "$DEMO/wallet.log" 2>&1 < /dev/null &
   echo $! > "$DEMO/wallet.pid"
   wait_http wallet "$WALLET/health" 10
 }
@@ -122,7 +132,10 @@ start_web() {
   say "web app on $WEB"
   if up_http "$WEB"; then say "already running (restart it with 'down' then 'up' if the demo wallet button is missing)"; return; fi
   [ -d web/node_modules ] || (cd web && npm install --no-audit --no-fund >/dev/null)
-  ( cd web && exec env NEXT_PUBLIC_DEMO_WALLET_URL="$WALLET" npm run dev -- -p 3001 ) \
+  # The browser only ever talks to this one port: the app proxies the API and the demo wallet, so it
+  # works the same through a forwarded Codespace address as on localhost, with nothing else exposed.
+  ( cd web && exec env API_PROXY_TARGET="$API" DEMO_WALLET_TARGET="$WALLET" \
+      NEXT_PUBLIC_API_URL="" NEXT_PUBLIC_DEMO_WALLET_URL="/demo-wallet" npm run dev -- -p 3001 ) \
     > "$DEMO/web.log" 2>&1 < /dev/null &
   echo $! > "$DEMO/web.pid"
   wait_http web "$WEB" 60
@@ -141,7 +154,7 @@ summary() {
 
 Everything is up.
 
-  App            $WEB   (fiat values use demo rates: 65,000 USD / 97,500,000 NGN per bitcoin)
+  App            $WEB$([ -n "$(public_origin)" ] && printf '\n  In your browser %s  (Codespaces: port 3001)' "$(public_origin)")   (fiat values use demo rates: 65,000 USD / 97,500,000 NGN per bitcoin)
   API            $API   (health: $(curl -fsS "$API/health" 2>/dev/null || echo unreachable))
   Operator token $OPERATOR_TOKEN   (sign in at $WEB/operator)
 

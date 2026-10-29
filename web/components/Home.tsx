@@ -7,28 +7,19 @@ import { formatLocalTime, formatSats } from "@/lib/clock";
 import { formatFiat } from "@/lib/fiat";
 import type { Escrow, NewUser } from "@/lib/schemas";
 import { rememberUserId, useSession, type Session } from "@/lib/session";
-import { CreateAccount, SignIn, TokenReveal } from "./Account";
+import { TokenReveal } from "./Account";
+import { Landing } from "./landing/Landing";
 import { Card, CopyField, Notice, Spinner, StateBadge } from "./ui";
 
 export function Home() {
   const session = useSession();
   const [created, setCreated] = useState<NewUser | null>(null);
 
-  if (session === undefined) return <Spinner />;
+  if (session === undefined) return null;
 
   if (created) return <TokenReveal user={created} onDone={() => setCreated(null)} />;
 
-  if (!session) {
-    return (
-      <div className="space-y-6">
-        <Intro />
-        <div className="grid gap-6 md:grid-cols-2">
-          <CreateAccount onCreated={setCreated} />
-          <SignIn />
-        </div>
-      </div>
-    );
-  }
+  if (!session) return <Landing onCreated={setCreated} />;
 
   if (session.kind === "operator") {
     return (
@@ -45,19 +36,6 @@ export function Home() {
   }
 
   return <MyEscrows session={session} />;
-}
-
-function Intro() {
-  return (
-    <div className="space-y-2">
-      <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Escrow on Lightning, without a middleman</h1>
-      <p className="text-neutral-600 dark:text-neutral-400">
-        The buyer&apos;s payment is locked by the Lightning network, not held by us. It goes to the seller only
-        when the buyer hands over a secret; if that doesn&apos;t happen before the deadline, the buyer is refunded
-        automatically.
-      </p>
-    </div>
-  );
 }
 
 function MyEscrows({ session }: { session: Session }) {
