@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "rehearse": "playwright test -c playwright.demo.config.ts"
   },
   "dependencies": {
     "next": "16.4.2",

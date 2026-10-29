@@ -104,7 +104,7 @@ function Loaded({ id, linkSecret }: { id: string; linkSecret: string | null }) {
         </Notice>
       )}
       <Summary escrow={escrow} />
-      <EscrowPanel escrow={escrow} setEscrow={setEscrow} refresh={refresh} linkSecret={linkSecret} />
+      <EscrowPanel escrow={escrow} setEscrow={setEscrow} refresh={refresh} linkSecret={linkSecret} events={events} />
       <Timeline events={events} escrow={escrow} />
     </>
   );

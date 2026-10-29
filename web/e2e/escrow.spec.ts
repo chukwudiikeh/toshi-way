@@ -393,7 +393,8 @@ test("arbitration: the arbiter releases a disputed escrow to the seller, and the
   await arbiter.page.getByRole("button", { name: "Release to the seller" }).click();
   await arbiter.page.getByRole("button", { name: "Yes, pay the seller" }).click();
   for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Settled")).toBeVisible();
-  await expect(seller.page.getByText("Delivery photo is genuine.")).toBeVisible();
+  // The note appears in the history more than once (the decision, and the settlement it caused).
+  await expect(seller.page.getByText("Delivery photo is genuine.").first()).toBeVisible();
 
   // The buyer never sent the secret in the clear: only a sealed blob. The seller never saw it. The
   // arbiter sent it once, in the decision.
