@@ -1,17 +1,18 @@
 //! Background loops that keep escrows in step with the node.
 //!
-//! `run_event_loop` watches every open escrow's invoice and feeds each state change into the
-//! service as it happens. It also runs `reconcile` at start and periodically, so anything missed
+//! `run_event_loop` watches every open escrow's invoice, on whichever node serves that escrow's
+//! seller, and feeds each state change into the service as it happens. It also runs `reconcile` at start and periodically, so anything missed
 //! while disconnected is caught. `run_scheduler` calls `tick` so holds are cancelled at their
 //! deadline with no human action.
 
 use std::{
     collections::HashMap,
     future::Future,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use escrow_core::{
+    adapter::NodeDirectory,
     model::{InvoiceEvent, NodeInvoiceState, PaymentHash},
     service::EscrowService,
     store::Store,
@@ -69,16 +70,22 @@ async fn watch_invoice(adapter: LndAdapter, hash: PaymentHash, tx: mpsc::Sender<
     }
 }
 
+/// How long to wait before trying again to reach a node that could not be found or connected to.
+const NODE_RETRY: Duration = Duration::from_secs(10);
+
 /// Runs until `shutdown` completes.
-pub async fn run_event_loop<S: Store>(
-    service: &EscrowService<LndAdapter, S>,
-    adapter: &LndAdapter,
+pub async fn run_event_loop<D, S>(
+    service: &EscrowService<D, S>,
     config: EventLoopConfig,
     shutdown: impl Future<Output = ()>,
-) {
+) where
+    D: NodeDirectory<Node = LndAdapter>,
+    S: Store,
+{
     tokio::pin!(shutdown);
     let (tx, mut rx) = mpsc::channel::<InvoiceEvent>(256);
     let mut watchers: HashMap<PaymentHash, JoinHandle<()>> = HashMap::new();
+    let mut unreachable: HashMap<PaymentHash, Instant> = HashMap::new();
 
     let mut discover = tokio::time::interval(config.discover_every);
     discover.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -96,11 +103,25 @@ pub async fn run_event_loop<S: Store>(
                 }
                 _ = discover.tick() => {
                     watchers.retain(|_, h| !h.is_finished());
-                    match service.active_payment_hashes().await {
-                        Ok(hashes) => for hash in hashes {
-                            watchers.entry(hash).or_insert_with(|| {
-                                tokio::spawn(watch_invoice(adapter.clone(), hash, tx.clone()))
-                            });
+                    match service.watch_targets().await {
+                        Ok(targets) => for t in targets {
+                            if watchers.contains_key(&t.payment_hash) {
+                                continue;
+                            }
+                            if unreachable.get(&t.payment_hash).is_some_and(|at| at.elapsed() < NODE_RETRY) {
+                                continue;
+                            }
+                            match service.directory().node(&t.seller_id, t.node).await {
+                                Ok(node) => {
+                                    unreachable.remove(&t.payment_hash);
+                                    watchers.insert(t.payment_hash, tokio::spawn(watch_invoice(node, t.payment_hash, tx.clone())));
+                                }
+                                Err(e) => {
+                                    // One seller's node being down must not stop the others being watched.
+                                    tracing::warn!(error = %e, seller = %t.seller_id, "cannot reach the node for an open escrow");
+                                    unreachable.insert(t.payment_hash, Instant::now());
+                                }
+                            }
                         },
                         Err(e) => tracing::error!(error = %e, "could not list open escrows"),
                     }
@@ -125,8 +146,8 @@ pub async fn run_event_loop<S: Store>(
 }
 
 /// Runs until `shutdown` completes.
-pub async fn run_scheduler<S: Store>(
-    service: &EscrowService<LndAdapter, S>,
+pub async fn run_scheduler<D: NodeDirectory, S: Store>(
+    service: &EscrowService<D, S>,
     every: Duration,
     shutdown: impl Future<Output = ()>,
 ) {

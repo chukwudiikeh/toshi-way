@@ -8,6 +8,7 @@
 // The buyer's invoice is paid from the buyer node with lncli, as a developer would by hand.
 
 import { execFile, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
@@ -262,4 +263,61 @@ test("one-click WebLN payment by the buyer and camera scan of the release QR by 
 
   await seller.page.getByRole("button", { name: /^Release 1,000 sats/ }).click();
   for (const p of [seller.page, buyer.page]) await expect(stateBadge(p, "Settled")).toBeVisible();
+});
+
+
+/** Spendable sats on a regtest node's channels (what the seller would see in their own wallet). */
+async function channelBalance(node: string): Promise<number> {
+  const run = promisify(execFile);
+  const { stdout } = await run("docker", [...COMPOSE, "exec", "-T", node, "lncli", "--network=regtest", "channelbalance"]);
+  return Number(JSON.parse(stdout).local_balance.sat);
+}
+
+const creds = (node: string, file: string) => resolve(REPO, "regtest/creds", node, file);
+
+test("a seller connects their own node and is paid on it", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+  const { page } = seller;
+
+  // Before connecting a node the seller is told the service's shared node would hold the money.
+  await page.goto("/escrows/new");
+  await expect(page.getByText("this escrow will use the service's shared node")).toBeVisible();
+
+  // Wrong credentials are refused and nothing is saved: seller's macaroon against seller2's address.
+  await page.getByRole("link", { name: "My node" }).click();
+  await expect(page.getByText("No node connected.").first()).toBeVisible();
+  await page.getByLabel("Node address").fill("https://localhost:10004");
+  await page.getByLabel("TLS certificate").fill(readFileSync(creds("seller2", "tls.cert"), "utf8"));
+  await page.getByLabel("Invoice macaroon (hex)").fill(readFileSync(creds("seller", "toshi.macaroon")).toString("hex"));
+  await page.getByRole("button", { name: "Check and save" }).click();
+  await expect(page.getByText(/could not|refused|did not pass/i).first()).toBeVisible();
+  await expect(page.getByText("Your node is connected.")).toHaveCount(0);
+
+  // Right credentials: connected.
+  await page.getByLabel("Invoice macaroon (hex)").fill(readFileSync(creds("seller2", "toshi.macaroon")).toString("hex"));
+  await page.getByRole("button", { name: "Check and save" }).click();
+  await expect(page.getByText("Your node is connected.")).toBeVisible();
+  await expect(page.getByText("https://localhost:10004")).toBeVisible();
+  // The credentials are not kept in the form, and the page never shows the macaroon back.
+  await expect(page.getByLabel("Invoice macaroon (hex)")).toHaveValue("");
+
+  // An escrow now lives on the seller's own node.
+  const before = await channelBalance("seller2");
+  const id = await createEscrow(seller, buyer.id, "e2e own node", ["30", "minutes"]);
+  await expect(page.getByText("The seller's own node")).toBeVisible();
+  await acceptAndPay(buyer, seller, id);
+  await buyer.page.getByRole("button", { name: "Reveal release QR" }).click();
+  await buyer.page.getByRole("button", { name: "Yes, show the QR" }).click();
+  const secret = await buyer.page.evaluate((id) => localStorage.getItem(`toshi.secret.${id}`), id);
+  await page.goto(`/escrows/${id}#release=${secret}`);
+  await page.getByRole("button", { name: /^Release 1,000 sats/ }).click();
+  for (const p of [page, buyer.page]) await expect(stateBadge(p, "Settled")).toBeVisible();
+
+  // The sats arrived on the seller's own node, not the service's.
+  await expect.poll(() => channelBalance("seller2"), { timeout: 20_000 }).toBe(before + 1000);
+
+  // While an escrow is in flight the node is locked in; once it is over it can be changed.
+  await page.goto("/node");
+  await expect(page.getByRole("button", { name: "Disconnect" })).toBeVisible();
 });

@@ -366,6 +366,35 @@ Not verified here: a real WebLN wallet extension and a real phone camera, since 
 
 ---
 
+## 17. Sellers bring their own node
+
+Lifts the "custody" non-goal's loose end: until now every seller shared one LND node, so after a release the sats sat on the operator's node (custodial). Now a seller can connect their own, and a release pays them directly.
+
+**Design.** The escrow service used to hold one global node adapter. It now holds a `NodeDirectory` that returns the right node per seller (`escrow-core/src/adapter.rs`). Every escrow records `node: own | shared`, fixed at creation, so changing node settings later cannot strand an invoice. `LndDirectory` (`escrow-lnd/src/directory.rs`) builds a client per seller on first use, caches it, and replaces it when the seller changes their node. The event loop now finds the node for each open invoice instead of watching one node; a seller whose node is down is retried every 10 s and does not stop other sellers' escrows being watched or cancelled (tested). With `SHARED_NODE=off` the service has no node of its own at all.
+
+**Security decisions.**
+- *Credentials at rest:* the invoice macaroon is sealed with AES-256-GCM under `NODE_CREDENTIAL_KEY` (random nonce per seal; tamper, truncation and wrong key all refused). Without the key, connecting nodes is disabled instead of falling back to plaintext. API responses never contain the macaroon or certificate. The form clears the macaroon after saving.
+- *Connection pinning:* the client library only reads credentials from files, so they are written to a 0700 temp directory with 0600 files, read by the connection, and deleted straight away. The connection is pinned to exactly the certificate the seller supplied.
+- *SSRF:* the node address makes our server open a connection to a user-chosen host, so it must be `https://host:port` and resolve only to public addresses (loopback, private, link-local including the cloud metadata address, CGNAT, multicast, documentation and reserved ranges all refused, IPv4-mapped IPv6 included). A DNS answer can change between the check and the connect, so pinning is the second line. `ALLOW_PRIVATE_NODE_ADDRESSES=1` exists for regtest only and logs a warning.
+- *Prove it works first:* saving connects, requires the node to be synced, creates a 1-sat hold invoice and cancels it; nothing is stored if any step fails. A macaroon from another node, or a certificate that is not the node's, is refused (tested on real LND).
+- *No swapping mid-flight:* a node cannot be changed or removed while an escrow with an invoice is in flight on it (409 `node_in_use`). Invoice creation and node changes are serialised with a read/write lock so a swap cannot slip between the check and an `accept`.
+
+**Persistence.** `escrows.node` (existing rows default to `shared`, which is what they were) and a `node_connections` table: SQLite migration 003, PostgreSQL migration 002. Both pass the extended store contract.
+
+**API and UI.** `GET/PUT/DELETE /api/v1/me/node`; an escrow now carries `seller_node`; a seller with no node and no shared node gets 409 `no_node`. The web app has a "My node" page with the exact commands to bake and hex-encode an invoice-only macaroon, warns sellers on the shared node that the service holds their money, blocks escrow creation when no node is available, and tells buyers on each escrow page whether the funds go to the seller's own node or the service's.
+
+**Verified.**
+- Mock-node flow tests (3) and HTTP tests (8): invoices land on their own seller's node and no other, a downed node does not affect other sellers, and the rules above.
+- Real LND (`each_seller_is_paid_on_their_own_node`): two sellers connect two different nodes with no shared node configured; each escrow's invoice exists only on its seller's node; both settle; each node's channel balance rises by exactly 1,000 sats; the stored macaroon is not in the database in the clear.
+- Browser (new Playwright test): a seller is warned about the shared node, is refused with the wrong macaroon, connects `seller2`, runs a full escrow, and `seller2`'s balance rises by 1,000. The suite is 7 tests, all passing. Neither log contains a 64-hex string or the macaroon, and the database holds only ciphertext.
+- Strict mode checked live: `SHARED_NODE=off` gives 409 `no_node`; loopback, `localhost`, `10.x`, `169.254.169.254` and `http://` addresses are all refused.
+
+**Not done / limits.** The macaroon check cannot prove a macaroon has *only* the three invoice permissions (a broader one still works), so the UI tells sellers to bake a limited one. Sellers must run a reachable node with hold-invoice support. Hosted accounts with a withdrawal flow (Mode B) are still not built, so a seller on the shared node still has no way to be paid out. A rotated credential key needs a re-encryption step that does not exist yet.
+
+**Environment note.** The Codespace restarted mid-session: containers came back with a corrupt layer and bitcoind had lost recent blocks, so LND's wallet was ahead of the chain ("Block height out of range"). Fix was `docker compose down -v` and `./regtest/setup.sh` (regtest is disposable). The `bridge-nf-call-iptables` setting also reset to 1 and had to be set to 0 again.
+
+---
+
 ## Next
 
 Pick the lead demo use case and rehearse. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

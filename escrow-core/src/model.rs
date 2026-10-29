@@ -39,12 +39,70 @@ impl fmt::Debug for Preimage {
     }
 }
 
+/// Whose Lightning node holds an escrow's invoice, and therefore receives the money on release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// The seller's own node: on release the sats go straight to the seller. Non-custodial.
+    Own,
+    /// The service's shared node: the operator receives the sats and owes them to the seller.
+    /// Custodial after release; offered only when the operator enables it.
+    Shared,
+}
+
+impl NodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Shared => "shared",
+        }
+    }
+}
+
+impl std::str::FromStr for NodeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "own" => Ok(Self::Own),
+            "shared" => Ok(Self::Shared),
+            other => Err(format!("unknown node kind '{other}'")),
+        }
+    }
+}
+
+/// How to reach a seller's own Lightning node. The macaroon is stored encrypted; the service
+/// that encrypts it is the only one that can read it back.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NodeConnection {
+    pub user_id: String,
+    /// `https://host:port` of the node's gRPC interface.
+    pub address: String,
+    /// The node's TLS certificate (PEM). It is public, and the connection is pinned to it.
+    pub tls_cert: String,
+    /// Nonce followed by ciphertext of the invoice macaroon.
+    pub macaroon_enc: Vec<u8>,
+    pub updated_at: i64,
+}
+
+impl fmt::Debug for NodeConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeConnection")
+            .field("user_id", &self.user_id)
+            .field("address", &self.address)
+            .field("macaroon_enc", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Escrow {
     pub id: String,
     /// `None` for an open offer that nobody has accepted yet; accepting it sets the buyer.
     pub buyer_id: Option<String>,
     pub seller_id: String,
+    /// Which node holds this escrow's invoice. Fixed at creation, so changing the seller's node
+    /// settings later cannot strand an escrow that is in flight.
+    pub node: NodeKind,
     pub amount_sats: u64,
     pub description: String,
     pub payment_hash: Option<PaymentHash>,

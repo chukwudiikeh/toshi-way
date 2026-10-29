@@ -69,6 +69,7 @@ impl From<ServiceError> for ApiError {
             E::Adapter(AdapterError::Unavailable(_)) => {
                 Self::new(StatusCode::SERVICE_UNAVAILABLE, "node_unavailable", "the Lightning node is unavailable, try again")
             }
+            E::Adapter(AdapterError::NoNode(m)) => Self::new(StatusCode::CONFLICT, "no_node", m),
             E::Adapter(AdapterError::Rejected(_)) => {
                 Self::new(StatusCode::BAD_GATEWAY, "node_rejected", "the Lightning node rejected the request")
             }
@@ -80,6 +81,12 @@ impl From<ServiceError> for ApiError {
                 Self::internal()
             }
         }
+    }
+}
+
+impl From<AdapterError> for ApiError {
+    fn from(e: AdapterError) -> Self {
+        ServiceError::from(e).into()
     }
 }
 

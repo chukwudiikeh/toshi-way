@@ -10,6 +10,7 @@ import {
   Health,
   Invoice,
   Me,
+  NodeInfo,
   NewUser,
   type NewEscrowRequest,
 } from "./schemas";
@@ -96,6 +97,13 @@ export const api = {
 
   me: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me", Me, opts),
 
+  node: (opts?: Pick<Options, "token" | "keepSessionOn401">) => request("GET", "/api/v1/me/node", NodeInfo, opts),
+
+  connectNode: (body: { address: string; tls_cert: string; macaroon: string }) =>
+    request("PUT", "/api/v1/me/node", NodeInfo, { body }),
+
+  disconnectNode: () => request("DELETE", "/api/v1/me/node", NodeInfo),
+
   listMine: (opts?: Pick<Options, "token" | "keepSessionOn401">) =>
     request("GET", "/api/v1/escrows", EscrowList, opts),
 
@@ -126,6 +134,13 @@ export const api = {
 export function describeError(err: unknown): string {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
   switch (err.code) {
+    case "no_node":
+      return "Connect your own Lightning node before creating an escrow.";
+    case "node_in_use":
+      return "You have escrows in progress on this node. Finish or cancel them before changing it.";
+    case "node_check_failed":
+    case "invalid_node":
+      return err.message;
     case "node_unavailable":
       return "The Lightning node is temporarily unavailable. Nothing has changed; try again in a moment.";
     case "rate_limited":

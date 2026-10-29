@@ -5,9 +5,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter},
+    adapter::{AdapterError, HoldInvoiceRequest, LightningAdapter, NodeDirectory},
     model::{
-        AuditEntry, Escrow, InvoiceEvent, NodeEventRecord, NodeInvoiceState, PaymentHash, Preimage,
+        AuditEntry, Escrow, InvoiceEvent, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Preimage,
     },
     state::EscrowState,
     store::{EscrowUpdate, Store, StoreError},
@@ -55,6 +55,14 @@ pub struct NewEscrow {
     pub deadline_at: i64,
 }
 
+/// An invoice to watch and where to find it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchTarget {
+    pub payment_hash: PaymentHash,
+    pub seller_id: String,
+    pub node: NodeKind,
+}
+
 #[derive(Debug, Default)]
 pub struct TickReport {
     pub cancelled: Vec<String>,
@@ -92,7 +100,7 @@ fn target_state(state: EscrowState, node: NodeInvoiceState) -> Result<Option<Esc
     }
 }
 
-impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
+impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
     pub fn new(adapter: A, store: S, timing: TimingConfig) -> Self {
         Self { adapter, store, timing }
     }
@@ -117,9 +125,38 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         Ok(self.adapter.ping().await?)
     }
 
-    /// Payment hashes of escrows whose invoice the node may still change.
-    pub async fn active_payment_hashes(&self) -> Result<Vec<PaymentHash>, ServiceError> {
-        Ok(self.store.list_active().await?.into_iter().filter_map(|e| e.payment_hash).collect())
+    /// The node directory, for code that manages sellers' node connections.
+    pub fn directory(&self) -> &A {
+        &self.adapter
+    }
+
+    /// The node an existing escrow lives on.
+    async fn node_of(&self, e: &Escrow) -> Result<A::Node, AdapterError> {
+        self.adapter.node(&e.seller_id, e.node).await
+    }
+
+    /// Open invoices the node may still change, each with the node to watch it on.
+    pub async fn watch_targets(&self) -> Result<Vec<WatchTarget>, ServiceError> {
+        Ok(self
+            .store
+            .list_active()
+            .await?
+            .into_iter()
+            .filter_map(|e| {
+                Some(WatchTarget { payment_hash: e.payment_hash?, seller_id: e.seller_id, node: e.node })
+            })
+            .collect())
+    }
+
+    /// Whether the seller has escrows in flight on their own node. Their node settings must not
+    /// change while that is true, or the invoices would be stranded on the old node.
+    pub async fn has_active_own_node_escrows(&self, seller_id: &str) -> Result<bool, ServiceError> {
+        Ok(self
+            .store
+            .list_active()
+            .await?
+            .iter()
+            .any(|e| e.seller_id == seller_id && e.node == NodeKind::Own && e.payment_hash.is_some()))
     }
 
     pub async fn audit_log(&self, id: &str) -> Result<Vec<AuditEntry>, ServiceError> {
@@ -134,10 +171,13 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
             return Err(ServiceError::Invalid("buyer and seller must differ".into()));
         }
         self.timing.validate_deadline(now, new.deadline_at)?;
+        // Fails with `NoNode` if the seller has no node and there is no shared one.
+        let node = self.adapter.kind_for_new(&new.seller_id).await?;
         let escrow = Escrow {
             id: uuid::Uuid::new_v4().to_string(),
             buyer_id: new.buyer_id,
             seller_id: new.seller_id,
+            node,
             amount_sats: new.amount_sats,
             description: new.description,
             payment_hash: None,
@@ -186,7 +226,8 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
 
         let expiry_secs = self.timing.invoice_expiry_secs.min(e.deadline_at - now);
         let invoice = self
-            .adapter
+            .node_of(&e)
+            .await?
             .create_hold_invoice(HoldInvoiceRequest {
                 payment_hash: hash,
                 amount_sats: e.amount_sats,
@@ -244,7 +285,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         if now >= e.deadline_at {
             return Err(ServiceError::TooLate);
         }
-        self.adapter.settle_invoice(preimage).await?;
+        self.node_of(&e).await?.settle_invoice(preimage).await?;
         self.sync_from_node(e, actor, "release", now).await
     }
 
@@ -270,7 +311,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
             (EscrowState::InvoiceIssued | EscrowState::Locked | EscrowState::Disputed, Some(h)) => h,
             (state, _) => return Err(ServiceError::InvalidState { action: "cancel", state }),
         };
-        self.adapter.cancel_invoice(&hash).await?;
+        self.node_of(&e).await?.cancel_invoice(&hash).await?;
         self.sync_from_node(e, actor, reason, now).await
     }
 
@@ -318,7 +359,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
             let Some(hash) = e.payment_hash else { continue };
             report.checked += 1;
             let before = e.state;
-            let result = match self.adapter.lookup_invoice(&hash).await {
+            let result = match self.lookup(&e, &hash).await {
                 Ok(Some(inv)) => self.apply_node_state(e.clone(), inv.state, "reconcile", "startup reconciliation", now).await,
                 Ok(None) => {
                     self.move_to(&e, EscrowState::Failed, EscrowUpdate::default(), "reconcile", "reconcile", "node has no such invoice", now)
@@ -335,6 +376,10 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         Ok(report)
     }
 
+    async fn lookup(&self, e: &Escrow, hash: &PaymentHash) -> Result<Option<crate::model::NodeInvoice>, AdapterError> {
+        self.node_of(e).await?.lookup_invoice(hash).await
+    }
+
     async fn sync_from_node(
         &self,
         e: Escrow,
@@ -343,7 +388,7 @@ impl<A: LightningAdapter, S: Store> EscrowService<A, S> {
         now: i64,
     ) -> Result<Escrow, ServiceError> {
         let hash = e.payment_hash.expect("escrows with an invoice have a hash");
-        match self.adapter.lookup_invoice(&hash).await? {
+        match self.lookup(&e, &hash).await? {
             Some(inv) => self.apply_node_state(e, inv.state, actor, reason, now).await,
             None => Ok(e),
         }
