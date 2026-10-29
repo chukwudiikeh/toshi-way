@@ -10,7 +10,7 @@ use crate::{
         AuditEntry, Escrow, InvoiceEvent, NodeEventRecord, NodeInvoiceState, NodeKind, PaymentHash, Preimage,
     },
     state::EscrowState,
-    store::{EscrowUpdate, Store, StoreError},
+    store::{EscrowUpdate, Store, StoreError, UserTotals},
     timing::{TimingConfig, TimingError},
 };
 
@@ -133,6 +133,10 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
 
     pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<Escrow>, ServiceError> {
         Ok(self.store.list_for_user(user_id).await?)
+    }
+
+    pub async fn totals_for_user(&self, user_id: &str) -> Result<UserTotals, ServiceError> {
+        Ok(self.store.totals_for_user(user_id).await?)
     }
 
     pub async fn node_events(&self, id: &str) -> Result<Vec<NodeEventRecord>, ServiceError> {

@@ -39,6 +39,12 @@ async fn postgres_store_meets_the_store_contract() {
 
 #[tokio::test]
 #[ignore = "needs PostgreSQL"]
+async fn postgres_store_lists_a_long_history_and_totals_all_of_it() {
+    escrow_core::testing::history_contract(&fresh().await).await;
+}
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL"]
 async fn postgres_store_meets_the_user_store_contract() {
     user_store_contract(&fresh().await).await;
 }
