@@ -204,6 +204,7 @@ web/app/...           pages above
 
 - ~~The seller invites a buyer by user id.~~ Solved in phase 5 (see `docs/flow.md`, section 15): `buyer_id` is optional on create, and the first user to accept an open offer becomes its buyer.
 - The idempotency cache is in server memory; it resets when the server restarts.
+- Arbitration exists (see `docs/flow.md`, section 18): an escrow can name an arbiter, and the buyer's browser seals the release secret to them.
 - The server's shared node uses an invoice-only macaroon (`toshi.macaroon`); sellers can also connect their own nodes (see `docs/flow.md`, section 17).
 - Hold times are limited to 6 hours by what the Lightning network safely supports (see `docs/flow.md`, section 7). Don't offer longer.
 - Wallet integration (for example WebLN, so the buyer can pay in one click) is not built. Showing the invoice as a QR and text is the requirement.

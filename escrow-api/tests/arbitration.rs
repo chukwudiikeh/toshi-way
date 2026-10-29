@@ -321,9 +321,9 @@ async fn a_disputed_escrow_is_released_to_the_seller_on_the_arbiters_say_so() {
     assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("SETTLED")), "{v}");
     assert_eq!(app.node.state(&p.hash()), Some(NodeInvoiceState::Settled));
     let (_, ev) = app.call(Method::GET, &format!("/api/v1/escrows/{id}/events"), Some(&buyer.token), None).await;
-    let last = ev["audit"].as_array().unwrap().last().unwrap();
-    assert_eq!(last["actor"], judge.id.as_str());
-    assert!(last["reason"].as_str().unwrap().contains("photo is genuine"));
+    let decision = ev["audit"].as_array().unwrap().iter().find(|a| a["action"] == "arbiter_decision").unwrap();
+    assert_eq!(decision["actor"], judge.id.as_str());
+    assert!(decision["reason"].as_str().unwrap().contains("photo is genuine"));
     // The secret is not echoed back anywhere.
     assert!(!ev.to_string().contains(&hex::encode(p.as_bytes())));
 }

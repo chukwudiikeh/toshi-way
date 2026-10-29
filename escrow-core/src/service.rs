@@ -437,9 +437,46 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         if now >= e.deadline_at {
             return Err(ServiceError::TooLate);
         }
+        // Put the decision on the record before touching the node. The node reports the settlement
+        // or cancellation itself and can win the race to record the state change, which would
+        // credit "the node" and drop the arbiter's name and note.
+        let verb = match &decision {
+            Decision::Release(p) => {
+                // A decision that cannot be carried out is not a decision: check before recording.
+                if Some(p.hash()) != e.payment_hash {
+                    return Err(ServiceError::WrongPreimage);
+                }
+                "release to the seller"
+            }
+            Decision::Refund => "refund the buyer",
+        };
+        self.record_decision(&e, arbiter, &reason(verb), now).await?;
         match decision {
-            Decision::Release(p) => self.release_as(id, &p, arbiter, &reason("release to the seller"), now).await,
-            Decision::Refund => self.cancel(id, arbiter, &reason("refund the buyer"), now).await,
+            Decision::Release(p) => self.release_as(id, &p, arbiter, &reason(verb), now).await,
+            Decision::Refund => self.cancel(id, arbiter, &reason(verb), now).await,
+        }
+    }
+
+    /// Add the arbiter's decision to the audit log without changing the state. Repeating the same
+    /// decision (for example after a failed node call) does not add a second entry.
+    async fn record_decision(&self, e: &Escrow, arbiter: &str, reason: &str, now: i64) -> Result<(), ServiceError> {
+        let log = self.store.audit_log(&e.id).await?;
+        if log.iter().rev().find(|a| a.action == "arbiter_decision").is_some_and(|a| a.reason == reason) {
+            return Ok(());
+        }
+        let audit = AuditEntry {
+            escrow_id: e.id.clone(),
+            actor: arbiter.to_string(),
+            action: "arbiter_decision".into(),
+            from_state: e.state,
+            to_state: e.state,
+            reason: reason.to_string(),
+            created_at: now,
+        };
+        match self.store.transition(&e.id, e.state, EscrowUpdate::default(), audit).await {
+            // The escrow moved on in the meantime (a node event); the action below will see it.
+            Ok(_) | Err(StoreError::Conflict) => Ok(()),
+            Err(err) => Err(err.into()),
         }
     }
 
