@@ -5,9 +5,12 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
 import { formatSats } from "@/lib/clock";
 import { DisputeForm, SecretInput, type Escrow, type Invoice } from "@/lib/schemas";
+import { scannerSupported, secretFromScan } from "@/lib/scan";
 import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } from "@/lib/secret";
+import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
 import { useStoredSecret } from "./hooks";
+import { Scanner } from "./Scanner";
 
 type PanelProps = {
   escrow: Escrow;
@@ -268,6 +271,29 @@ function SecretHealth({ stored }: { stored: ReturnType<typeof useStoredSecret> }
 function InvoiceBox({ escrow }: { escrow: Escrow }) {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wallet, setWallet] = useState(false);
+  const [walletMsg, setWalletMsg] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [paying, setPaying] = useState(false);
+
+  // Wallet extensions inject `window.webln` after load, so look once the page is up.
+  useEffect(() => {
+    const t = setTimeout(() => setWallet(getWebLN() !== null), 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  async function payWithWallet(request: string) {
+    setPaying(true);
+    setWalletMsg(null);
+    try {
+      await payWithWebLN(request);
+      // We do not claim the funds are locked: this page changes only when the API says so.
+      setWalletMsg({ tone: "info", text: "Payment sent to your wallet. This page updates once the node confirms the funds are locked." });
+    } catch (err) {
+      setWalletMsg({ tone: "error", text: err instanceof Error ? err.message : "The wallet could not pay." });
+    } finally {
+      setPaying(false);
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -299,6 +325,14 @@ function InvoiceBox({ escrow }: { escrow: Escrow }) {
         </div>
         <div className="text-sm font-medium">Scan with a Lightning wallet to pay {formatSats(escrow.amount_sats)}</div>
       </div>
+      {wallet && (
+        <div className="space-y-2">
+          <Button onClick={() => payWithWallet(invoice.payment_request)} busy={paying}>
+            Pay {formatSats(escrow.amount_sats)} with my wallet
+          </Button>
+          {walletMsg && <Notice tone={walletMsg.tone}>{walletMsg.text}</Notice>}
+        </div>
+      )}
       <CopyField value={invoice.payment_request} label="Copy invoice" />
       {expires && <Countdown until={expires} label="Pay within" endedText="Expired" />}
       {process.env.NODE_ENV === "development" && (
@@ -466,6 +500,26 @@ function ReleaseForm({
 }) {
   const [value, setValue] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [canScan, setCanScan] = useState(false);
+
+  // Feature detection needs the browser, so it runs after mount.
+  useEffect(() => {
+    const t = setTimeout(() => setCanScan(scannerSupported()), 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  // A scan only fills the field. Releasing still takes a deliberate press of the button.
+  function onScan(text: string) {
+    const result = secretFromScan(text, escrow.id);
+    if ("error" in result) {
+      setError(result.error);
+      return;
+    }
+    setValue(result.secret);
+    setError(null);
+    setScanning(false);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -506,6 +560,14 @@ function ReleaseForm({
           maxLength={80}
         />
       </Field>
+      {canScan &&
+        (scanning ? (
+          <Scanner onText={onScan} onClose={() => setScanning(false)} />
+        ) : (
+          <Button variant="secondary" onClick={() => setScanning(true)}>
+            Scan the buyer&apos;s QR
+          </Button>
+        ))}
       <Button type="submit" busy={actions.busy === "release"}>
         Release {formatSats(escrow.amount_sats)}
       </Button>
