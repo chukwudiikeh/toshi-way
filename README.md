@@ -34,12 +34,15 @@ Everything runs on a local **regtest** network with a stand-in wallet; no real m
 | `escrow-sqlite/`, `escrow-postgres/` | the two storage backends, with migrations, passing one shared contract test |
 | `escrow-api/` | the HTTP API and the `toshi-server` binary |
 | `web/` | the Next.js app |
+| `sdk/js/` | a small JavaScript client for businesses: make and read escrows, verify webhooks |
 | `regtest/` | Docker Compose Lightning network (bitcoind, buyer, router, two sellers) |
 | `scripts/` | `demo-env.sh` (one-command environment), `demo.sh` (curl walkthrough), `seed-demo.mjs`, `demo-wallet.mjs` |
 
 ## Docs
 
 - [`docs/demo.md`](docs/demo.md): the demo script, with talk track, limits and troubleshooting
+- [`docs/api.md`](docs/api.md): for businesses: take payments from your own site (API keys, checkout link, webhooks)
+- [`sdk/js/README.md`](sdk/js/README.md): the JavaScript client
 - [`docs/project.md`](docs/project.md): product spec, trust model, API and status
 - [`docs/flow.md`](docs/flow.md): a log of every decision, measurement and problem, in order
 - [`docs/gist.md`](docs/gist.md): the original PRD
@@ -48,6 +51,7 @@ Everything runs on a local **regtest** network with a stand-in wallet; no real m
 
 ```bash
 cargo test --workspace                                     # fast, no network needed
+(cd sdk/js && npm test)                                    # the JavaScript client, no server needed
 cargo test -p escrow-lnd -- --ignored --test-threads=1     # against the real regtest nodes
 cargo test -p escrow-postgres -- --ignored --test-threads=1  # needs the postgres profile running
 (cd web && npm test && npm run lint && npm run build)      # unit tests, lint, build
