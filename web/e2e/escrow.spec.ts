@@ -141,3 +141,35 @@ test("refund path: a 62 second hold is refunded with nobody acting", async ({ br
   }
   await expect(buyer.page.getByText("Your payment was cancelled and the funds are back in your wallet.")).toBeVisible();
 });
+
+test("an offer nobody has accepted can be withdrawn by the seller or declined by the buyer", async ({ browser }) => {
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  const withdrawn = await createEscrow(seller, buyer.id, "e2e withdrawn", ["30", "minutes"]);
+  await seller.page.getByRole("button", { name: "Withdraw offer" }).click();
+  await seller.page.getByRole("button", { name: "Withdraw offer" }).last().click();
+  await expect(stateBadge(seller.page, "Ended unpaid")).toBeVisible();
+  await buyer.page.goto(`/escrows/${withdrawn}`);
+  await expect(stateBadge(buyer.page, "Ended unpaid")).toBeVisible();
+  await expect(buyer.page.getByRole("button", { name: /Accept offer/ })).toHaveCount(0);
+
+  const declined = await createEscrow(seller, buyer.id, "e2e declined", ["30", "minutes"]);
+  await buyer.page.goto(`/escrows/${declined}`);
+  await buyer.page.getByRole("button", { name: "Decline" }).click();
+  await buyer.page.getByRole("button", { name: "Yes, decline" }).click();
+  await expect(stateBadge(buyer.page, "Ended unpaid")).toBeVisible();
+  await expect(stateBadge(seller.page, "Ended unpaid")).toBeVisible();
+});
+
+test("signing in with a token finds the account's id and role", async ({ browser }) => {
+  const user = await newParty(browser);
+  const token = (await user.page.evaluate(() => localStorage.getItem("toshi.session")))!;
+  const fresh = await browser.newContext();
+  const page = await fresh.newPage();
+  await page.goto("/");
+  await page.getByLabel("Token").fill(JSON.parse(token).token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "My escrows" })).toBeVisible();
+  await expect(page.getByText(user.id)).toBeVisible();
+});

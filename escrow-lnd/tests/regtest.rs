@@ -27,8 +27,11 @@ fn creds(node: &str, file: &str) -> String {
     format!("{}/../regtest/creds/{node}/{file}", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The service's adapter. On the seller node it uses the restricted invoice-only macaroon the
+/// real server uses, so these tests prove nothing else is needed; other nodes use admin.
 async fn adapter(node: &str, port: u16) -> LndAdapter {
-    LndAdapter::connect(&format!("https://localhost:{port}"), creds(node, "tls.cert"), creds(node, "admin.macaroon"), CALL_TIMEOUT)
+    let macaroon = if node == "seller" { "toshi.macaroon" } else { "admin.macaroon" };
+    LndAdapter::connect(&format!("https://localhost:{port}"), creds(node, "tls.cert"), creds(node, macaroon), CALL_TIMEOUT)
         .await
         .expect("is ./regtest/setup.sh running?")
 }
@@ -218,4 +221,76 @@ async fn scheduler_refunds_automatically_at_the_deadline() {
 
     events.abort();
     scheduler.abort();
+}
+
+/// Backend restart with payments in flight, against the real node and an on-disk database.
+/// Three escrows are open when the "process" dies; while it is down the node moves on without
+/// it. After restart, reconciliation must adopt the node's view and the escrows must still be
+/// usable.
+#[tokio::test]
+#[ignore = "needs the regtest network"]
+async fn restart_mid_escrow_reconciles_with_the_live_node() {
+    let dir = std::env::temp_dir().join(format!("toshi-restart-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("toshi.db");
+    let db = db.to_str().unwrap();
+    let seller = adapter("seller", 10003).await;
+    let (a, b, c) = (new_secret(), new_secret(), new_secret());
+
+    // First life: A and B are paid and locked, C has an invoice nobody has paid yet.
+    let store = Arc::new(SqliteStore::open(db).await.unwrap());
+    let svc = Arc::new(EscrowService::new(seller.clone(), store.clone(), TimingConfig::default()));
+    let events = tokio::spawn({
+        let (svc, seller) = (svc.clone(), seller.clone());
+        async move { runner::run_event_loop(&svc, &seller, runner::EventLoopConfig::default(), pending()).await }
+    });
+    let mut ids = Vec::new();
+    let mut invoices = Vec::new();
+    for p in [&a, &b, &c] {
+        let e = svc.create(offer(1800), runner::unix_now()).await.unwrap();
+        let e = svc.accept(&e.id, p.hash(), "buyer", runner::unix_now()).await.unwrap();
+        ids.push(e.id);
+        invoices.push(e.invoice.unwrap());
+    }
+    let pay_a = pay(invoices[0].clone());
+    let pay_b = pay(invoices[1].clone());
+    for id in &ids[..2] {
+        wait_until("LOCKED", 20, || async { state_of(&svc, id).await == EscrowState::Locked }).await;
+    }
+
+    // The process dies.
+    events.abort();
+    drop(svc);
+    drop(store);
+
+    // While it is down: the node cancels B's hold, and the buyer pays C's invoice.
+    seller.cancel_invoice(&b.hash()).await.unwrap();
+    assert_eq!(pay_b.await.unwrap(), PaymentStatus::Failed);
+    let pay_c = pay(invoices[2].clone());
+    wait_until("C accepted by the node", 20, || async {
+        seller.lookup_invoice(&c.hash()).await.unwrap().is_some_and(|i| i.state == NodeInvoiceState::Accepted)
+    })
+    .await;
+
+    // Second life: same database file, fresh adapter, store and service.
+    let seller = adapter("seller", 10003).await;
+    let store = Arc::new(SqliteStore::open(db).await.unwrap());
+    let svc = Arc::new(EscrowService::new(seller.clone(), store, TimingConfig::default()));
+    assert_eq!(state_of(&svc, &ids[1]).await, EscrowState::Locked, "the database still has the old view");
+    let report = svc.reconcile(runner::unix_now()).await.unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(state_of(&svc, &ids[0]).await, EscrowState::Locked, "A is untouched");
+    assert_eq!(state_of(&svc, &ids[1]).await, EscrowState::Refunded, "B follows the node's cancel");
+    assert_eq!(state_of(&svc, &ids[2]).await, EscrowState::Locked, "C follows the payment made while down");
+
+    // The survivors still settle, and the cancelled one stays cancelled.
+    assert!(svc.release(&ids[1], &b, "seller", runner::unix_now()).await.is_err());
+    assert_eq!(svc.release(&ids[0], &a, "seller", runner::unix_now()).await.unwrap().state, EscrowState::Settled);
+    assert_eq!(svc.release(&ids[2], &c, "seller", runner::unix_now()).await.unwrap().state, EscrowState::Settled);
+    assert_eq!(pay_a.await.unwrap(), PaymentStatus::Succeeded);
+    assert_eq!(pay_c.await.unwrap(), PaymentStatus::Succeeded);
+
+    // Each transition is audited exactly once, restart or not.
+    assert_eq!(svc.audit_log(&ids[0]).await.unwrap().len(), 3);
+    std::fs::remove_dir_all(&dir).ok();
 }

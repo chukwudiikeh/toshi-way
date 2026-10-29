@@ -324,6 +324,21 @@ Environment note: this Codespace had no Rust or `protoc`; installed with rustup 
 
 ---
 
+## 14. Phase 5, step 2: restricted macaroon and a restart test on the real node
+
+- **Restricted macaroon.** `regtest/setup.sh` now bakes `toshi.macaroon` on the seller node with `invoices:read invoices:write info:read`, exactly what the adapter uses (add/settle/cancel/lookup/subscribe invoices, plus `GetInfo` for `/health`). Checked by hand: with it `getinfo` works and `listchannels` / `walletbalance` answer `permission denied`. `toshi-server` defaults to it, and the seller adapter in the real-node tests uses it, so those tests prove nothing more is needed. The buyer side of the tests still uses `admin.macaroon` because it plays a wallet.
+- **Restart test** (`restart_mid_escrow_reconciles_with_the_live_node`, real LND, on-disk SQLite). Three escrows are open when the "process" dies: A and B locked, C invoiced but unpaid. While it is down the node cancels B's hold and the buyer pays C. A new store, adapter and service open the same file; `reconcile` leaves A `LOCKED`, moves B to `REFUNDED` and C to `LOCKED`, and then A and C settle with their secrets while B cannot be released. This is the "restart mid-escrow" acceptance criterion, now proven against a real node.
+- **E2E.** Added two Playwright tests (withdraw and decline an offer; sign-in via `/me`). All four pass. The badge for `EXPIRED_UNPAID` now reads "Ended unpaid".
+- `scripts/demo.sh` passes both paths with the server on the restricted macaroon; neither server nor web log contains a 64-hex string.
+
+### Things that went wrong on the way
+
+- **Containers could not talk to each other in this Codespace**, so LND sat forever after "Database(s) now open" and `setup.sh` timed out on "buyer wallet". Cause: the legacy iptables tables have `FORWARD DROP` and `bridge-nf-call-iptables=1` sends bridged traffic through them. Fix used: `sudo sysctl -w net.bridge.bridge-nf-call-iptables=0` (lasts until reboot), then restart the LND containers and re-run `setup.sh`.
+- Playwright had no system Chrome here: used `npx playwright install chromium`, `npx playwright install-deps chromium`, and `PW_CHANNEL=chromium npm run e2e`.
+- `adapter_settle_cancel_and_idempotency` failed once on the first run right after `setup.sh` and passed on every later run (three full runs); put down to the nodes still settling, not reproduced.
+
+---
+
 ## Next
 
-Phase 5 hardening: a restricted invoice macaroon instead of `admin.macaroon`, and a restart test against the real node. Optional: WebLN one-click payment, an in-app QR scanner.
+Pick the lead demo use case and rehearse. Optional: WebLN one-click payment, an in-app QR scanner.

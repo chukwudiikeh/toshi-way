@@ -127,7 +127,7 @@ docker compose -f regtest/docker-compose.yml down        # stop, keep state
 docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the network
 ```
 
-`admin.macaroon` is for local Phase 1 work only; the real service should use restricted macaroons.
+`admin.macaroon` is for local Phase 1 work only. `setup.sh` also bakes `toshi.macaroon` for the seller node, limited to `invoices:read`, `invoices:write` and `info:read`; `toshi-server` and the seller adapter in the tests use it.
 
 ## Status
 
@@ -142,7 +142,8 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 - [x] Phase 4 frontend (`web/`): account, new escrow, escrow page by role and state with release QR hand-over, operator queue; 44 unit tests; both demo paths pass end to end in the browser (Playwright, `npm run e2e`)
 - [x] `server_time` on `/health` for client clock-skew correction
 - [x] Hardening 1: `CREATED` offers can be withdrawn (seller, operator) or declined (buyer) and lapse at their deadline; `GET /api/v1/me`
-- [ ] Hardening 2: restricted macaroon, restart test on real node, demo rehearsal
+- [x] Hardening 2: restricted invoice-only macaroon (`regtest/creds/seller/toshi.macaroon`, now the server default), restart test on the real node
+- [ ] Demo rehearsal and choosing the lead use case
 
 ## Open questions
 
@@ -156,7 +157,7 @@ docker compose -f regtest/docker-compose.yml down -v     # stop and wipe the net
 ```bash
 cargo test --workspace                                    # fast, no network needed
 ./regtest/setup.sh                                        # once, to start the regtest network
-cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests, about a minute
+cargo test -p escrow-lnd -- --ignored --test-threads=1    # real-node tests (4), about a minute
 cargo run -p phase1 -- both                               # the original hold-invoice demo
 
 export OPERATOR_TOKEN=$(openssl rand -hex 16)             # 24+ characters
