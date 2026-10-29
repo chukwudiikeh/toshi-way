@@ -3,22 +3,45 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { formatSats } from "@/lib/clock";
-import { recentActivity, shortDuration, shortId, timeAgo, type Summary, type Todo } from "@/lib/dashboard";
+import {
+  recentActivity,
+  shortDuration,
+  shortId,
+  timeAgo,
+  type Summary,
+  type Todo,
+} from "@/lib/dashboard";
 import type { ArbiterKey, Balance, Escrow, NodeInfo } from "@/lib/schemas";
 import { CopyField, StateBadge } from "../ui";
-import { ArrowIcon, BoltIcon, CheckIcon, ClockIcon, KeyIcon, LockIcon, QrIcon, ScaleIcon, ShieldIcon } from "../landing/icons";
+import {
+  ArrowIcon,
+  BoltIcon,
+  CheckIcon,
+  ClockIcon,
+  KeyIcon,
+  LockIcon,
+  QrIcon,
+  ScaleIcon,
+  ShieldIcon,
+} from "../landing/icons";
 
-export const panel = "rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900/60";
+export const panel =
+  "rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900/60";
 
 export function RoleBadge({ role }: { role: Escrow["your_role"] }) {
   const style: Record<string, string> = {
     buyer: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
-    seller: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-    arbiter: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
-    operator: "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+    seller:
+      "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+    arbiter:
+      "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
+    operator:
+      "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
   };
   return (
-    <span className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${style[role]}`}>
+    <span
+      className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${style[role]}`}
+    >
       {role}
     </span>
   );
@@ -41,14 +64,26 @@ function Stat({
 }) {
   return (
     <div
-      className={`${panel} p-5 ${tone === "attention" ? "border-amber-400 bg-amber-50 ring-1 ring-amber-400/40 dark:border-amber-500/60 dark:bg-amber-500/10" : ""}`}
+      className={`p-5 ${tone === "attention" ? "bg-amber-50 dark:bg-amber-500/10" : ""}`}
     >
       <div className="flex items-center justify-between text-neutral-500">
-        <span className="text-xs font-semibold uppercase tracking-[0.12em]">{label}</span>
-        <span className={tone === "attention" ? "text-amber-600 dark:text-amber-400" : ""}>{icon}</span>
+        <span className="text-xs font-semibold uppercase tracking-[0.12em]">
+          {label}
+        </span>
+        <span
+          className={
+            tone === "attention" ? "text-amber-600 dark:text-amber-400" : ""
+          }
+        >
+          {icon}
+        </span>
       </div>
-      <div className="mt-3 font-mono text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
-      <div className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">{sub}</div>
+      <div className="mt-2 font-mono text-2xl font-semibold tabular-nums tracking-tight">
+        {value}
+      </div>
+      <div className="mt-0.5 text-xs text-neutral-600 dark:text-neutral-400">
+        {sub}
+      </div>
     </div>
   );
 }
@@ -56,24 +91,37 @@ function Stat({
 export function StatCards({ summary }: { summary: Summary }) {
   const parts = (...xs: (string | null)[]) => xs.filter(Boolean).join(" · ");
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <div
+      className={`${panel} grid grid-cols-2 divide-neutral-200 overflow-hidden dark:divide-neutral-800 max-lg:[&>*:nth-child(n+3)]:border-t max-lg:[&>*:nth-child(even)]:border-l lg:grid-cols-4 lg:divide-x max-lg:[&>*]:border-neutral-200 dark:max-lg:[&>*]:border-neutral-800`}
+    >
       <Stat
         label="Needs you"
         tone={summary.attention > 0 ? "attention" : "plain"}
         icon={<ClockIcon className="size-5" />}
         value={summary.attention}
-        sub={summary.attention > 0 ? (summary.attention === 1 ? "move is yours" : "moves are yours") : "Nothing is waiting on you"}
+        sub={
+          summary.attention > 0
+            ? summary.attention === 1
+              ? "move is yours"
+              : "moves are yours"
+            : "Nothing is waiting on you"
+        }
       />
       <Stat
         label="Locked now"
         icon={<LockIcon className="size-5" />}
-        value={formatSats(summary.lockedOut + summary.lockedIn).replace(" sats", "")}
+        value={formatSats(summary.lockedOut + summary.lockedIn).replace(
+          " sats",
+          "",
+        )}
         sub={
           summary.lockedCount === 0
             ? "No funds locked"
             : parts(
                 `${summary.lockedCount} escrow${summary.lockedCount === 1 ? "" : "s"}`,
-                summary.lockedOut ? `${formatSats(summary.lockedOut)} out` : null,
+                summary.lockedOut
+                  ? `${formatSats(summary.lockedOut)} out`
+                  : null,
                 summary.lockedIn ? `${formatSats(summary.lockedIn)} in` : null,
               )
         }
@@ -86,8 +134,12 @@ export function StatCards({ summary }: { summary: Summary }) {
           summary.settled.count === 0
             ? "None yet"
             : parts(
-                summary.settled.received ? `Received ${formatSats(summary.settled.received)}` : null,
-                summary.settled.paid ? `Paid ${formatSats(summary.settled.paid)}` : null,
+                summary.settled.received
+                  ? `Received ${formatSats(summary.settled.received)}`
+                  : null,
+                summary.settled.paid
+                  ? `Paid ${formatSats(summary.settled.paid)}`
+                  : null,
               ) || "Settled"
         }
       />
@@ -95,7 +147,11 @@ export function StatCards({ summary }: { summary: Summary }) {
         label="Refunded"
         icon={<ShieldIcon className="size-5" />}
         value={summary.refunded.count}
-        sub={summary.refunded.count === 0 ? "None" : `${formatSats(summary.refunded.sats)} returned`}
+        sub={
+          summary.refunded.count === 0
+            ? "None"
+            : `${formatSats(summary.refunded.sats)} returned`
+        }
       />
     </div>
   );
@@ -113,6 +169,19 @@ const kindIcon = {
 } as const;
 
 export function Attention({ items, now }: { items: Todo[]; now: number }) {
+  if (items.length === 0) {
+    return (
+      <section
+        className={`${panel} flex items-center gap-3 px-5 py-4 text-sm text-neutral-600 dark:text-neutral-400`}
+        aria-label="Needs your attention"
+      >
+        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+          <CheckIcon className="size-4" />
+        </span>
+        You&apos;re all caught up. Nothing is waiting on you right now.
+      </section>
+    );
+  }
   return (
     <section className={panel} aria-labelledby="attention-title">
       <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
@@ -120,7 +189,9 @@ export function Attention({ items, now }: { items: Todo[]; now: number }) {
           Needs your attention
         </h2>
         {items.length > 0 && (
-          <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-black">{items.length}</span>
+          <span className="rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-black">
+            {items.length}
+          </span>
         )}
       </div>
       {items.length === 0 ? (
@@ -148,12 +219,17 @@ export function Attention({ items, now }: { items: Todo[]; now: number }) {
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{t.title}</div>
                     <div className="truncate text-sm text-neutral-600 dark:text-neutral-400">
-                      {t.escrow.description || "(no description)"} · <span className="font-mono">{formatSats(t.escrow.amount_sats)}</span>
+                      {t.escrow.description || "(no description)"} ·{" "}
+                      <span className="font-mono">
+                        {formatSats(t.escrow.amount_sats)}
+                      </span>
                     </div>
                     <div className="text-xs text-neutral-500">{t.detail}</div>
                     {/* On a phone the right-hand column is hidden, so the time left goes here. */}
                     {left !== null && (
-                      <div className={`mt-1 font-mono text-xs tabular-nums sm:hidden ${urgent ? "font-semibold text-red-600 dark:text-red-400" : "text-neutral-500"}`}>
+                      <div
+                        className={`mt-1 font-mono text-xs tabular-nums sm:hidden ${urgent ? "font-semibold text-red-600 dark:text-red-400" : "text-neutral-500"}`}
+                      >
                         {left > 0 ? `${shortDuration(left)} left` : "now"}
                       </div>
                     )}
@@ -161,7 +237,9 @@ export function Attention({ items, now }: { items: Todo[]; now: number }) {
                   <div className="hidden shrink-0 text-right sm:block">
                     <RoleBadge role={t.escrow.your_role} />
                     {left !== null && (
-                      <div className={`mt-1 font-mono text-sm tabular-nums ${urgent ? "font-semibold text-red-600 dark:text-red-400" : "text-neutral-600 dark:text-neutral-400"}`}>
+                      <div
+                        className={`mt-1 font-mono text-sm tabular-nums ${urgent ? "font-semibold text-red-600 dark:text-red-400" : "text-neutral-600 dark:text-neutral-400"}`}
+                      >
                         {left > 0 ? `${shortDuration(left)} left` : "now"}
                       </div>
                     )}
@@ -179,11 +257,15 @@ export function Attention({ items, now }: { items: Todo[]; now: number }) {
 
 // Side panels
 
-function SideCard({ title, children, action }: { title: string; children: ReactNode; action?: ReactNode }) {
+type SideProps = { title: string; children: ReactNode; action?: ReactNode };
+
+function Section({ title, children, action }: SideProps) {
   return (
-    <section className={`${panel} p-5`}>
+    <section>
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">{title}</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
+          {title}
+        </h2>
         {action}
       </div>
       <div className="mt-3">{children}</div>
@@ -191,31 +273,64 @@ function SideCard({ title, children, action }: { title: string; children: ReactN
   );
 }
 
-const linkClass = "text-sm font-semibold text-amber-700 hover:underline dark:text-amber-400";
-
-export function AccountCard({ userId }: { userId: string | null }) {
+function SideCard(props: SideProps) {
   return (
-    <SideCard title="Your account">
-      {userId ? (
-        <div className="space-y-2">
-          <div className="text-sm text-neutral-600 dark:text-neutral-400">Your user id</div>
-          <CopyField value={userId} />
-          <p className="text-xs text-neutral-500">Not secret. Give it to a seller so they can make you an offer.</p>
-        </div>
-      ) : (
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          Your user id isn&apos;t stored on this device yet. It appears here once you have an escrow.
-        </p>
-      )}
-    </SideCard>
+    <div className={`${panel} p-5`}>
+      <Section {...props} />
+    </div>
   );
 }
 
-export function NodeCard({ node }: { node: NodeInfo | null }) {
+/** Account, node and arbiter are one card with three sections, not three cards. */
+export function AccountStack({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className={`${panel} divide-y divide-neutral-200 dark:divide-neutral-800 [&>*]:p-5`}
+    >
+      {children}
+    </div>
+  );
+}
+
+const linkClass =
+  "text-sm font-semibold text-amber-700 hover:underline dark:text-amber-400";
+
+export function AccountCard({
+  userId,
+  bare,
+}: { userId: string | null } & { bare?: boolean }) {
+  const Wrap = bare ? Section : SideCard;
+  return (
+    <Wrap title="Your account">
+      {userId ? (
+        <div className="space-y-2">
+          <div className="text-sm text-neutral-600 dark:text-neutral-400">
+            Your user id
+          </div>
+          <CopyField value={userId} />
+          <p className="text-xs text-neutral-500">
+            Not secret. Give it to a seller so they can make you an offer.
+          </p>
+        </div>
+      ) : (
+        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          Your user id isn&apos;t stored on this device yet. It appears here
+          once you have an escrow.
+        </p>
+      )}
+    </Wrap>
+  );
+}
+
+export function NodeCard({
+  node,
+  bare,
+}: { node: NodeInfo | null } & { bare?: boolean }) {
+  const Wrap = bare ? Section : SideCard;
   if (!node) return null;
   const own = node.mode === "own";
   return (
-    <SideCard
+    <Wrap
       title="Lightning node"
       action={
         <Link href="/node" className={linkClass}>
@@ -231,33 +346,45 @@ export function NodeCard({ node }: { node: NodeInfo | null }) {
           {own ? (
             <>
               <div className="font-medium">Your own node is connected</div>
-              <div className="truncate font-mono text-xs text-neutral-500">{node.address}</div>
-              <div className="mt-1 text-xs text-neutral-500">Released payments land with you directly.</div>
+              <div className="truncate font-mono text-xs text-neutral-500">
+                {node.address}
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Released payments land with you directly.
+              </div>
             </>
           ) : node.mode === "shared" ? (
             <>
               <div className="font-medium">Using the shared node</div>
               <div className="mt-1 text-xs text-neutral-500">
-                The service receives your sats and owes them to you. Connect your own node to be paid directly.
+                The service receives your sats and owes them to you. Connect
+                your own node to be paid directly.
               </div>
             </>
           ) : (
             <>
               <div className="font-medium">No node connected</div>
-              <div className="mt-1 text-xs text-neutral-500">Connect one to create escrows as a seller.</div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Connect one to create escrows as a seller.
+              </div>
             </>
           )}
         </div>
       </div>
-    </SideCard>
+    </Wrap>
   );
 }
 
-export function ArbiterCard({ key_, asArbiter }: { key_: ArbiterKey | null; asArbiter: number }) {
+export function ArbiterCard({
+  key_,
+  asArbiter,
+  bare,
+}: { key_: ArbiterKey | null; asArbiter: number } & { bare?: boolean }) {
+  const Wrap = bare ? Section : SideCard;
   if (!key_) return null;
   const ready = !!key_.fingerprint;
   return (
-    <SideCard
+    <Wrap
       title="Arbiter"
       action={
         <Link href="/arbiter" className={linkClass}>
@@ -269,16 +396,23 @@ export function ArbiterCard({ key_, asArbiter }: { key_: ArbiterKey | null; asAr
         {ready ? (
           <>
             <div className="font-medium">Ready to be named as an arbiter</div>
-            <div className="mt-1 break-words font-mono text-[11px] text-neutral-500">{key_.fingerprint?.slice(0, 29)}…</div>
-            {asArbiter > 0 && <div className="mt-1 text-xs text-neutral-500">{asArbiter} escrow{asArbiter === 1 ? "" : "s"} name you.</div>}
+            <div className="mt-1 break-words font-mono text-[11px] text-neutral-500">
+              {key_.fingerprint?.slice(0, 29)}…
+            </div>
+            {asArbiter > 0 && (
+              <div className="mt-1 text-xs text-neutral-500">
+                {asArbiter} escrow{asArbiter === 1 ? "" : "s"} name you.
+              </div>
+            )}
           </>
         ) : (
           <div className="text-neutral-600 dark:text-neutral-400">
-            Be the trusted referee in other people&apos;s escrows. Set up a key to be named as an arbiter.
+            Be the trusted referee in other people&apos;s escrows. Set up a key
+            to be named as an arbiter.
           </div>
         )}
       </div>
-    </SideCard>
+    </Wrap>
   );
 }
 
@@ -292,8 +426,12 @@ export function Activity({ escrows, now }: { escrows: Escrow[]; now: number }) {
           <li key={e.id}>
             <Link href={`/escrows/${e.id}`} className="group block">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium group-hover:underline">{e.description || `#${shortId(e.id)}`}</span>
-                <span className="shrink-0 text-xs text-neutral-500">{timeAgo(now, e.updated_at)}</span>
+                <span className="truncate text-sm font-medium group-hover:underline">
+                  {e.description || `#${shortId(e.id)}`}
+                </span>
+                <span className="shrink-0 text-xs text-neutral-500">
+                  {timeAgo(now, e.updated_at)}
+                </span>
               </div>
               <div className="mt-1">
                 <StateBadge state={e.state} />
@@ -318,7 +456,9 @@ export function BalanceCard({ balance }: { balance: Balance | null }) {
         </Link>
       }
     >
-      <div className="text-2xl font-bold tabular-nums">{formatSats(balance.available_sats)}</div>
+      <div className="text-2xl font-bold tabular-nums">
+        {formatSats(balance.available_sats)}
+      </div>
       <div className="mt-1 text-xs text-neutral-500">
         {balance.held_sats > 0
           ? `${formatSats(balance.held_sats)} on the way to you.`
