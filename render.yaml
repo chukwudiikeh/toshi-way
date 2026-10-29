@@ -99,7 +99,9 @@ services:
         value: "120"
 
       # --- Off at launch -----------------------------------------------------------------------
-      # No fiat ramp until a real provider is connected. The built-in demo one refuses to run on mainnet.
+      # No fiat ramp until a real provider is connected. The built-in demo one is for test networks only
+      # and refuses to run on mainnet. To rehearse it on signet, set RAMP_PROVIDER to demo and add
+      # RAMP_LND_ADDR, RAMP_LND_TLS_CERT_B64 and RAMP_LND_MACAROON_B64 (see docs/signet-dry-run.md).
       - key: RAMP_PROVIDER
         value: "off"
       - key: FIAT_PROVIDER

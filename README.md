@@ -44,6 +44,8 @@ Everything runs on a local **regtest** network with a stand-in wallet; no real m
 - [`docs/api.md`](docs/api.md): for businesses: take payments from your own site (API keys, checkout link, webhooks)
 - [`sdk/js/README.md`](sdk/js/README.md): the JavaScript client
 - [`docs/architecture.md`](docs/architecture.md): how the system is put together: crates, state machine, trust model, background tasks, web app
+- [`docs/deploy-render.md`](docs/deploy-render.md): deploying the app and database on Render
+- [`docs/signet-dry-run.md`](docs/signet-dry-run.md): rehearsing on a public test network, including the naira flows
 - [`docs/project.md`](docs/project.md): product spec, trust model, API and status
 - [`docs/flow.md`](docs/flow.md): a log of every decision, measurement and problem, in order
 - [`docs/gist.md`](docs/gist.md): the original PRD

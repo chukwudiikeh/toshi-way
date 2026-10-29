@@ -20,7 +20,8 @@
 //!                    invoices:read invoices:write info:read). With it, sellers on the shared node get a balance
 //!                    they can withdraw any time. Without it there are no balances. Off by default.
 //!   RAMP_PROVIDER    off (default) or demo: pay and get paid in naira. Needs FIAT_PROVIDER to price NGN.
-//!                    "demo" moves no real money: its Lightning side is RAMP_LND_ADDR (default
+//!                    "demo" moves no real money, and refuses to start unless its node is on a test network
+//!                    (regtest, signet or testnet): its Lightning side is RAMP_LND_ADDR (default
 //!                    https://localhost:10001), RAMP_LND_TLS_CERT and RAMP_LND_MACAROON (a payout macaroon).
 //!   RAMP_FEE_BPS     the ramp's fee in hundredths of a percent (default 150, which is 1.5%)
 //!   NAIRA_HOLD_HOURS sats from an escrow paid in naira can be withdrawn this long after it settles
@@ -128,11 +129,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The demo takes "I've sent the transfer" on trust and pays with this node's sats. On a
             // real network that would hand out real money for pretend transfers, so refuse to start.
             let network = node.network().await?;
-            if network != "regtest" {
-                eprintln!("RAMP_PROVIDER=demo only runs against a regtest node; RAMP_LND_ADDR is on {network}");
+            if !escrow_core::ramp::demo_provider_allowed_on(&network) {
+                eprintln!("RAMP_PROVIDER=demo only runs against a test network (regtest, signet or testnet); RAMP_LND_ADDR is on {network}");
                 std::process::exit(2);
             }
-            tracing::warn!("RAMP_PROVIDER=demo: naira payments are pretend (regtest only)");
+            tracing::warn!(%network, "RAMP_PROVIDER=demo: naira payments are pretend (test networks only)");
             Some(Arc::new(node))
         }
         other => {
