@@ -4,7 +4,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, describeError } from "@/lib/api";
 import { formatSats } from "@/lib/clock";
-import { DisputeForm, SecretInput, type Escrow, type Invoice } from "@/lib/schemas";
+import { DisputeForm, SecretInput, type Escrow, type EscrowEvents, type Invoice } from "@/lib/schemas";
 import { loadArbiterKey, openSealed, sealSecret } from "@/lib/arbiter";
 import { scannerSupported, secretFromScan } from "@/lib/scan";
 import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } from "@/lib/secret";
@@ -19,6 +19,8 @@ type PanelProps = {
   refresh: () => Promise<void>;
   /** A release secret taken from a `#release=` link, if this page was opened with one. */
   linkSecret: string | null;
+  /** The escrow's history, so an arbiter can read what was reported right where they decide. */
+  events?: EscrowEvents | null;
 };
 
 type Run = (name: string, fn: () => Promise<Escrow>) => Promise<boolean>;
@@ -29,7 +31,7 @@ function appUrl(): string {
   return (process.env.NEXT_PUBLIC_APP_URL || window.location.origin).replace(/\/+$/, "");
 }
 
-export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret }: PanelProps) {
+export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret, events }: PanelProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret }: PanelPro
 
   let body: ReactNode;
   if (role === "operator") body = <OperatorPanel escrow={escrow} actions={actions} />;
-  else if (role === "arbiter") body = <ArbiterPanel escrow={escrow} actions={actions} />;
+  else if (role === "arbiter") body = <ArbiterPanel escrow={escrow} actions={actions} events={events ?? null} />;
   else if (role === "buyer") body = <BuyerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
   else body = <SellerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
 
@@ -478,7 +480,11 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
         <div className="space-y-4">
           {escrow.state === "LOCKED" && (
             <Notice tone="success">
-              <strong>Funds are locked: you can start the work.</strong>
+              {escrow.arbiter_id && !escrow.arbiter_confirmed_at ? (
+                <strong>Funds are locked.</strong>
+              ) : (
+                <strong>Funds are locked: you can start the work.</strong>
+              )}
             </Notice>
           )}
           {escrow.state === "LOCKED" && escrow.arbiter_id && !escrow.arbiter_confirmed_at && (
@@ -701,7 +707,7 @@ function ArbiterNotice({ escrow }: { escrow: Escrow }) {
 
 type Verified = { status: "idle" | "checking" | "ok" | "bad"; message?: string };
 
-function ArbiterPanel({ escrow, actions }: { escrow: Escrow; actions: Actions }) {
+function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Actions; events: EscrowEvents | null }) {
   const [verified, setVerified] = useState<Verified>({ status: "idle" });
   // The decrypted secret lives in memory only, for as long as this panel does.
   const [secret, setSecret] = useState<string | null>(null);
@@ -777,6 +783,7 @@ function ArbiterPanel({ escrow, actions }: { escrow: Escrow; actions: Actions })
             <strong>A dispute is waiting for your decision.</strong> Read the history below, then decide. You must
             decide before the deadline: after it the buyer is refunded automatically.
           </Notice>
+          <Reported escrow={escrow} events={events} />
           <Deadline escrow={escrow} />
           <Field label="Your note (shown in the history)" hint="Optional. Why you decided this way.">
             <textarea
@@ -803,7 +810,6 @@ function ArbiterPanel({ escrow, actions }: { escrow: Escrow; actions: Actions })
             <ConfirmButton
               confirmText={`Refund the buyer ${formatSats(escrow.amount_sats)}? The seller will not be paid.`}
               confirmLabel="Yes, refund the buyer"
-              variant="danger"
               busy={actions.busy === "decide"}
               onConfirm={() => actions.run("decide", () => api.decide(escrow.id, "refund", note))}
             >
@@ -815,4 +821,23 @@ function ArbiterPanel({ escrow, actions }: { escrow: Escrow; actions: Actions })
     default:
       return <FinalSummary escrow={escrow} />;
   }
+}
+
+/** What each side reported when the dispute was opened, quoted where the arbiter decides. */
+function Reported({ escrow, events }: { escrow: Escrow; events: EscrowEvents | null }) {
+  const reports = (events?.audit ?? []).filter((a) => a.action === "dispute");
+  if (reports.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-neutral-200 p-3 text-sm dark:border-neutral-800">
+      <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">What was reported</div>
+      {reports.map((r, i) => (
+        <p key={i}>
+          <span className="font-medium">
+            {r.actor === escrow.buyer_id ? "The buyer" : r.actor === escrow.seller_id ? "The seller" : "A party"}:
+          </span>{" "}
+          &ldquo;{r.reason}&rdquo;
+        </p>
+      ))}
+    </div>
+  );
 }
