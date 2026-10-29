@@ -558,6 +558,26 @@ The page people spend the most time on was a flat list: a small title, a grid of
 
 ---
 
+## 25. Account password (the vault)
+
+Creating an account now asks for a password first, like a wallet, then shows the token once as the **recovery key**. On that device only the password is needed to come back; on a new device you import the token and set a new password for it.
+
+**How it works** (`web/lib/vault.ts`, `web/lib/session.ts`). The token is still the real credential and the server is unchanged: it stores only the token's hash. The password never leaves the browser. It is stretched with PBKDF2-SHA-256 (600,000 rounds, stored in the vault so it can be raised later) and used with AES-256-GCM to encrypt the token and user id into `localStorage["toshi.vault"]`. Unlocking decrypts it into memory and into this tab's `sessionStorage`, so a reload does not ask again; closing the tab does. An unlocked account locks itself after 30 minutes idle.
+
+**States.** `none` (nothing saved), `locked` (vault present, password needed), `unlocked`, and `unprotected` (an account saved by the older version as plain text). Unprotected accounts keep working, and the dashboard nudges them to add a password on the Account page.
+
+**Account page** (`/account`). The user id, "Show my token" (asks for the password again), change password, lock now, and "Remove from this device" (with a warning that only the token gets you back). The sidebar button says "Lock" for a protected account.
+
+**Forgot the password?** There is no reset, because the server never knew it. Choose "Sign in with a token" on the unlock screen and set a new password. If the server rejects the saved token (401), the vault is removed rather than locked, so unlock cannot loop.
+
+**Security notes.** The token must be guarded like a seed phrase: anyone who has it is you. The password only protects the copy on this device; someone who copies the encrypted vault can guess passwords offline, which PBKDF2 slows but does not stop, hence the minimum length and the common-password check. A script injected into the page (XSS) could still read the unlocked token, exactly as before. 
+
+**Not done (Phase 2).** An encrypted backup file for the things that live only in this browser: a buyer's release secrets (`toshi.secret.<escrowId>`) and an arbiter's private keys (`toshi.arbiterKey.<fingerprint>`). Lose the browser data and those are gone, token or not.
+
+**Verified.** Unit tests for the vault (12) and session (15); a browser test that creates an account, checks the token is not in storage, locks, tries a wrong then the right password, shows the token, imports it on a second browser and removes it from the first. All 15 browser tests and the 3-scene rehearsal pass.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.
